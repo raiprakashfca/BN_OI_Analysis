@@ -1,0 +1,4 @@
+kiteconnect
+gspread
+pandas
+google-auth
