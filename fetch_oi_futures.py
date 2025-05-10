@@ -1,9 +1,10 @@
-# fetch_oi_futures.py
+# fetch_oi_futures.py (GitHub Actions Compatible)
 import pandas as pd
 import datetime as dt
 from kiteconnect import KiteConnect
 from google.oauth2.service_account import Credentials
 import gspread
+import sys
 import time
 
 # --- CONFIG ---
@@ -11,6 +12,15 @@ TOKEN_SHEET_NAME = "ZerodhaTokenStore"
 OI_LOG_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
 OI_LOG_SHEET_NAME = "Sheet1"
 STOCKS = ["BANKNIFTY", "ICICIBANK", "HDFCBANK", "SBIN", "AXISBANK", "KOTAKBANK", "PNB", "BANKBARODA"]
+
+# --- Check for weekend or holiday ---
+def is_trading_day():
+    today = dt.date.today()
+    if today.weekday() >= 5:
+        print("🚫 Today is a weekend. Skipping fetch.")
+        return False
+    # Optional: Add NSE holiday logic here
+    return True
 
 # --- Load Zerodha Tokens from Google Sheet ---
 def load_kite_client():
@@ -33,7 +43,6 @@ def get_futures_tokens(kite):
     df_inst = pd.DataFrame(inst)
     df_fut = df_inst[(df_inst.segment == "NFO-FUT") & (df_inst.name.isin(STOCKS))]
 
-    # Filter current month expiry only
     today = dt.date.today()
     df_fut["expiry"] = pd.to_datetime(df_fut["expiry"]).dt.date
     df_fut = df_fut[df_fut["expiry"] >= today]
@@ -72,14 +81,25 @@ def append_to_sheet(client, rows):
 
 # --- Main Runner ---
 def main():
+    if not is_trading_day():
+        sys.exit(0)
     try:
+        print("🔑 Loading credentials and tokens...")
         kite, client = load_kite_client()
+
+        print("📦 Fetching instrument tokens...")
         df_tokens = get_futures_tokens(kite)
+
+        print("📊 Fetching OI snapshot...")
         rows = fetch_oi_snapshot(kite, df_tokens)
+
+        print("📝 Logging to Google Sheet...")
         append_to_sheet(client, rows)
-        print("✅ OI snapshot logged.")
+
+        print("✅ OI snapshot logged successfully.")
     except Exception as e:
         print(f"❌ Error: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
