@@ -20,15 +20,20 @@ def load_gsheet_client():
     )
     return gspread.authorize(credentials)
 
+# --- Cached Google Sheet Data ---
+@st.cache_data(ttl=600)
+def get_sheet_data(sheet_name):
+    client = load_gsheet_client()
+    sheet = client.open_by_key(OI_LOG_SHEET_ID).worksheet(sheet_name)
+    return sheet.get_all_values()
+
 # --- Load Sheet Data ---
 def load_sheet(sheet_name):
     try:
-        client = load_gsheet_client()
-        sheet_titles = [ws.title for ws in client.open_by_key(OI_LOG_SHEET_ID).worksheets()]
-        st.write("✅ Available sheets:", sheet_titles)
+        sheet_titles = [INTRADAY_SHEET, EOD_SHEET]
+        st.write("✅ Using cached sheet list:", sheet_titles)
 
-        sheet = client.open_by_key(OI_LOG_SHEET_ID).worksheet(sheet_name)
-        data = sheet.get_all_values()
+        data = get_sheet_data(sheet_name)
         df = pd.DataFrame(data[1:], columns=data[0]) if len(data) > 1 else pd.DataFrame()
         st.write(f"✅ Columns in {sheet_name}: {list(df.columns)}")
         return df
