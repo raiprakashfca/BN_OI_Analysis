@@ -2,7 +2,7 @@ name: Scheduled OI Fetch
 
 on:
   schedule:
-    - cron: '*/15 3-10 * * 1-5'  # Every 15 mins during 9:15–15:30 IST (UTC+5:30)
+    - cron: '*/15 3-10 * * 1-5'  # Every 15 mins from 9:15 to 15:30 IST (3–10 UTC)
   workflow_dispatch:  # Allow manual trigger
 
 jobs:
@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v2
 
       - name: Set up Python
@@ -22,9 +22,11 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Write service account credentials
+      - name: Decode service account credentials from base64
         run: |
-          echo "${{ secrets.SERVICE_ACCOUNT_JSON }}" > service_account.json
+          echo "$SERVICE_ACCOUNT_JSON_B64" | base64 --decode > service_account.json
+        env:
+          SERVICE_ACCOUNT_JSON_B64: ${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}
 
       - name: Run OI Fetch Script
         run: |
