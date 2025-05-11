@@ -1,32 +1,20 @@
-# oi_dashboard.py — Streamlit visualizer using base64-decoded secrets
+# oi_dashboard.py — Streamlit visualizer using secure JSON secrets
 import streamlit as st
 import pandas as pd
 import datetime as dt
 from google.oauth2.service_account import Credentials
 import gspread
 import altair as alt
-import json
-import base64
-import io
 
 # --- CONFIG ---
 OI_LOG_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
 INTRADAY_SHEET = "Sheet1"
 EOD_SHEET = "EOD_Summary"
 
-# --- Google Sheets Auth via base64 Streamlit secret ---
+# --- Google Sheets Auth via structured secret ---
 @st.cache_resource
 def load_gsheet_client():
-    b64_json = st.secrets["SERVICE_ACCOUNT_JSON_B64"]
-    missing_padding = len(b64_json) % 4
-    if missing_padding:
-        b64_json += "=" * (4 - missing_padding)
-
-    creds_bytes = base64.b64decode(b64_json)
-    creds_stream = io.BytesIO(creds_bytes)
-    creds_dict = json.load(creds_stream)
-
-    credentials = Credentials.from_service_account_info(creds_dict)
+    credentials = Credentials.from_service_account_info(st.secrets["google_service_account"])
     return gspread.authorize(credentials)
 
 # --- Load Sheet Data ---
