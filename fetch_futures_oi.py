@@ -1,72 +1,83 @@
-# fetch_futures_oi.py — Daily OI Logger for Futures
+# fetch_futures_oi.py — Updated to use SERVICE_ACCOUNT_JSON_B64
+import os
+import json
+import base64
+from datetime import datetime
 import pandas as pd
 from kiteconnect import KiteConnect
 from google.oauth2.service_account import Credentials
 import gspread
-from datetime import datetime
-import os
 
 # --- Constants ---
+SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
+SHEET_NAME = "Futures_OI_Log"
 SYMBOLS = ["BANKNIFTY", "HDFCBANK", "SBIN", "ICICIBANK", "AXISBANK", "KOTAKBANK", "PNB", "BANKBARODA"]
-SHEET_NAME = "OI_DailyLog"
-TAB_NAME = "Futures_OI_Log"
 
-# --- Load credentials from environment secrets ---
-creds_dict = {
-    "type": os.getenv("GDRIVE_TYPE"),
-    "project_id": os.getenv("GDRIVE_PROJECT_ID"),
-    "private_key_id": os.getenv("GDRIVE_PRIVATE_KEY_ID"),
-    "private_key": os.getenv("GDRIVE_PRIVATE_KEY").replace("\\n", "\n"),
-    "client_email": os.getenv("GDRIVE_CLIENT_EMAIL"),
-    "client_id": os.getenv("GDRIVE_CLIENT_ID"),
-    "auth_uri": os.getenv("GDRIVE_AUTH_URI"),
-    "token_uri": os.getenv("GDRIVE_TOKEN_URI"),
-    "auth_provider_x509_cert_url": os.getenv("GDRIVE_AUTH_PROVIDER_CERT"),
-    "client_x509_cert_url": os.getenv("GDRIVE_CLIENT_CERT"),
-    "universe_domain": os.getenv("GDRIVE_UNIVERSE_DOMAIN")
-}
-credentials = Credentials.from_service_account_info(creds_dict)
-client = gspread.authorize(credentials)
-sheet = client.open(SHEET_NAME)
-worksheet = sheet.worksheet(TAB_NAME)
+# --- Setup Google Sheet client ---
+def get_gsheet_client():
+    b64_json = os.getenv("SERVICE_ACCOUNT_JSON_B64")
+    if not b64_json:
+        raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64 environment variable")
+    padding = len(b64_json) % 4
+    if padding:
+        b64_json += '=' * (4 - padding)
+    creds_dict = json.loads(base64.b64decode(b64_json).decode("utf-8"))
+    credentials = Credentials.from_service_account_info(
+        creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    return gspread.authorize(credentials)
 
-# --- Kite Init ---
-kite = KiteConnect(api_key=os.getenv("ZERODHA_API_KEY"))
-kite.set_access_token(os.getenv("ZERODHA_ACCESS_TOKEN"))
+# --- Setup Zerodha client ---
+def get_kite_client():
+    api_key = os.getenv("ZERODHA_API_KEY")
+    access_token = os.getenv("ZERODHA_ACCESS_TOKEN")
+    kite = KiteConnect(api_key=api_key)
+    kite.set_access_token(access_token)
+    return kite
 
-# --- Fetch Instruments ---
-instruments = kite.instruments("NSE") + kite.instruments("NFO")
-df_instruments = pd.DataFrame(instruments)
+# --- Fetch Futures OI ---
+def fetch_futures_oi():
+    kite = get_kite_client()
+    instruments = pd.DataFrame(kite.instruments("NSE"))
+    today = datetime.now().date()
 
-# --- Filter for Futures ---
-fut_rows = []
-today_str = datetime.now().strftime("%Y-%m-%d")
+    fno = pd.DataFrame(kite.instruments("NFO"))
+    fno = fno[(fno["segment"] == "NFO-FUT") & (fno["instrument_type"] == "FUT")]
 
-for symbol in SYMBOLS:
-    df_fut = df_instruments[
-        (df_instruments["name"] == symbol) &
-        (df_instruments["segment"] == "NFO-FUT")
-    ].copy()
+    records = []
+    for symbol in SYMBOLS:
+        df = fno[fno["name"] == symbol].sort_values("expiry")
+        if df.empty:
+            print(f"⚠️ No futures found for {symbol}")
+            continue
 
-    for _, row in df_fut.iterrows():
+        row = df.iloc[0]  # Nearest expiry
+        token = row["instrument_token"]
+        lot_size = row["lot_size"]
+        expiry = row["expiry"].strftime("%Y-%m-%d")
+
         try:
-            quote = kite.ltp([row["instrument_token"]])[str(row["instrument_token"])]
-            oi = quote.get("depth", {}).get("buy", [{}])[0].get("quantity", None)
-            fut_rows.append({
-                "Date": today_str,
-                "Symbol": symbol,
-                "Expiry": row["expiry"],
-                "Token": row["instrument_token"],
-                "OI": oi,
-                "Lot Size": row["lot_size"]
-            })
+            quote = kite.ltp([f"NFO:{row['tradingsymbol']}"])
+            oi = quote[f"NFO:{row['tradingsymbol']}"]["depth"]["buy"]
+            total_oi = sum([level["orders"] for level in oi])
+            records.append([str(today), symbol, expiry, token, total_oi, lot_size])
+            print(f"✅ {symbol} | Expiry: {expiry} | OI: {total_oi}")
         except Exception as e:
-            print(f"⚠️ Failed for {symbol} — {e}")
+            print(f"❌ Error fetching OI for {symbol}: {e}")
 
-# --- Write to Google Sheet ---
-df_out = pd.DataFrame(fut_rows)
-if not df_out.empty:
-    worksheet.append_rows(df_out.values.tolist(), value_input_option="USER_ENTERED")
-    print(f"✅ Logged {len(df_out)} futures OI entries to Google Sheet")
-else:
-    print("⚠️ No futures data found to log.")
+    return records
+
+# --- Append to Google Sheet ---
+def append_to_sheet(records):
+    client = get_gsheet_client()
+    sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
+    sheet.append_rows(records, value_input_option="USER_ENTERED")
+    print(f"✅ Logged {len(records)} rows to {SHEET_NAME}")
+
+# --- Main Entry ---
+if __name__ == "__main__":
+    rows = fetch_futures_oi()
+    if rows:
+        append_to_sheet(rows)
+    else:
+        print("⚠️ No data to log.")
