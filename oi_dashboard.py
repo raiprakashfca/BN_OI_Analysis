@@ -17,6 +17,10 @@ EOD_SHEET = "EOD_Summary"
 @st.cache_resource
 def load_gsheet_client():
     b64_json = st.secrets["SERVICE_ACCOUNT_JSON_B64"]
+    # Add missing padding if needed
+    missing_padding = len(b64_json) % 4
+    if missing_padding:
+        b64_json += "=" * (4 - missing_padding)
     creds_dict = json.loads(base64.b64decode(b64_json))
     credentials = Credentials.from_service_account_info(creds_dict)
     return gspread.authorize(credentials)
