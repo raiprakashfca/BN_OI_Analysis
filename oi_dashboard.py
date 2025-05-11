@@ -14,7 +14,10 @@ EOD_SHEET = "EOD_Summary"
 # --- Google Sheets Auth via structured secret ---
 @st.cache_resource
 def load_gsheet_client():
-    credentials = Credentials.from_service_account_info(st.secrets["google_service_account"])
+    credentials = Credentials.from_service_account_info(
+        st.secrets["google_service_account"],
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
     return gspread.authorize(credentials)
 
 # --- Load Sheet Data ---
