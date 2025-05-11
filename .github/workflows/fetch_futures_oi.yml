@@ -1,28 +1,13 @@
-name: Fetch Futures OI Daily
+name: fetch-oi-futures
 
 on:
   schedule:
-    - cron: '15 10 * * 1-5'  # 3:45 PM IST is 10:15 AM UTC
+    - cron: '*/15 9-15 * * 1-5'  # Every 15 min from 9:00 to 15:45 IST (converted to UTC)
   workflow_dispatch:
 
 jobs:
-  fetch-oi:
+  fetch-and-log:
     runs-on: ubuntu-latest
-    env:
-      ZERODHA_API_KEY: ${{ secrets.ZERODHA_API_KEY }}
-      ZERODHA_ACCESS_TOKEN: ${{ secrets.ZERODHA_ACCESS_TOKEN }}
-      GDRIVE_TYPE: ${{ secrets.GDRIVE_TYPE }}
-      GDRIVE_PROJECT_ID: ${{ secrets.GDRIVE_PROJECT_ID }}
-      GDRIVE_PRIVATE_KEY_ID: ${{ secrets.GDRIVE_PRIVATE_KEY_ID }}
-      GDRIVE_PRIVATE_KEY: ${{ secrets.GDRIVE_PRIVATE_KEY }}
-      GDRIVE_CLIENT_EMAIL: ${{ secrets.GDRIVE_CLIENT_EMAIL }}
-      GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
-      GDRIVE_AUTH_URI: ${{ secrets.GDRIVE_AUTH_URI }}
-      GDRIVE_TOKEN_URI: ${{ secrets.GDRIVE_TOKEN_URI }}
-      GDRIVE_AUTH_PROVIDER_CERT: ${{ secrets.GDRIVE_AUTH_PROVIDER_CERT }}
-      GDRIVE_CLIENT_CERT: ${{ secrets.GDRIVE_CLIENT_CERT }}
-      GDRIVE_UNIVERSE_DOMAIN: ${{ secrets.GDRIVE_UNIVERSE_DOMAIN }}
-
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v3
@@ -37,5 +22,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Futures OI Logger
-        run: python fetch_futures_oi.py
+      - name: Run fetch_futures_oi.py
+        env:
+          ZERODHA_API_KEY: ${{ secrets.ZERODHA_API_KEY }}
+          ZERODHA_ACCESS_TOKEN: ${{ secrets.ZERODHA_ACCESS_TOKEN }}
+          SERVICE_ACCOUNT_JSON_B64: ${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}
+        run: |
+          python fetch_futures_oi.py
