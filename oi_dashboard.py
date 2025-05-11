@@ -24,13 +24,14 @@ def load_gsheet_client():
 def load_sheet(sheet_name):
     try:
         client = load_gsheet_client()
-        # Diagnostic: show available sheets
         sheet_titles = [ws.title for ws in client.open_by_key(OI_LOG_SHEET_ID).worksheets()]
         st.write("✅ Available sheets:", sheet_titles)
 
         sheet = client.open_by_key(OI_LOG_SHEET_ID).worksheet(sheet_name)
         data = sheet.get_all_values()
-        return pd.DataFrame(data[1:], columns=data[0]) if len(data) > 1 else pd.DataFrame()
+        df = pd.DataFrame(data[1:], columns=data[0]) if len(data) > 1 else pd.DataFrame()
+        st.write(f"✅ Columns in {sheet_name}: {list(df.columns)}")
+        return df
     except Exception as e:
         st.error(f"❌ Failed to load Google Sheet '{sheet_name}': {e}")
         raise e
@@ -44,6 +45,14 @@ df_intraday = load_sheet(INTRADAY_SHEET)
 df_eod = load_sheet(EOD_SHEET)
 
 # --- Sidebar Controls ---
+if "Timestamp" not in df_intraday.columns:
+    st.error("❌ 'Timestamp' column not found in Sheet1. Check column headers in the Google Sheet.")
+    st.stop()
+
+if "Symbol" not in df_intraday.columns:
+    st.error("❌ 'Symbol' column not found in Sheet1. Check column headers in the Google Sheet.")
+    st.stop()
+
 date_options = sorted(df_intraday['Timestamp'].str.slice(0, 10).unique())[::-1]
 selected_date = st.sidebar.selectbox("Select Date", date_options)
 df_day = df_intraday[df_intraday['Timestamp'].str.startswith(selected_date)]
