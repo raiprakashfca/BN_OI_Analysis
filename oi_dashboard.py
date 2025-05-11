@@ -7,7 +7,6 @@ import gspread
 import altair as alt
 import json
 import base64
-import io
 
 # --- CONFIG ---
 OI_LOG_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
@@ -23,10 +22,11 @@ def load_gsheet_client():
     if missing_padding:
         b64_json += "=" * (4 - missing_padding)
     try:
-        creds_dict = json.loads(base64.b64decode(b64_json).decode("utf-8"))
-    except UnicodeDecodeError:
-        creds_bytes = base64.b64decode(b64_json)
-        creds_dict = json.load(io.BytesIO(creds_bytes))
+        decoded = base64.b64decode(b64_json).decode("utf-8")
+    except UnicodeDecodeError as e:
+        st.error("Base64 content could not be decoded as UTF-8. Please verify the encoding.")
+        raise e
+    creds_dict = json.loads(decoded)
     credentials = Credentials.from_service_account_info(creds_dict)
     return gspread.authorize(credentials)
 
