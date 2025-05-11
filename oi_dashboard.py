@@ -16,7 +16,7 @@ EOD_SHEET = "EOD_Summary"
 def load_gsheet_client():
     credentials = Credentials.from_service_account_info(
         st.secrets["google_service_account"],
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
     )
     return gspread.authorize(credentials)
 
@@ -30,11 +30,11 @@ def get_sheet_data(sheet_name):
 # --- Load Sheet Data ---
 def load_sheet(sheet_name):
     try:
-        sheet_titles = [INTRADAY_SHEET, EOD_SHEET]
-        st.write("✅ Using cached sheet list:", sheet_titles)
-
         data = get_sheet_data(sheet_name)
-        df = pd.DataFrame(data[1:], columns=data[0]) if len(data) > 1 else pd.DataFrame()
+        if not data or len(data) < 2:
+            st.warning(f"⚠️ No data or only headers in sheet: {sheet_name}")
+            return pd.DataFrame()
+        df = pd.DataFrame(data[1:], columns=data[0])
         st.write(f"✅ Columns in {sheet_name}: {list(df.columns)}")
         return df
     except Exception as e:
@@ -50,7 +50,7 @@ df_intraday = load_sheet(INTRADAY_SHEET)
 df_eod = load_sheet(EOD_SHEET)
 
 # --- Sidebar Controls ---
-if "Timestamp" not in df_intraday.columns:
+if df_intraday.empty or "Timestamp" not in df_intraday.columns:
     st.error("❌ 'Timestamp' column not found in Sheet1. Check column headers in the Google Sheet.")
     st.stop()
 
@@ -91,7 +91,7 @@ st.altair_chart(chart, use_container_width=True)
 
 # --- EOD Summary Table ---
 st.subheader("🧾 EOD Summary")
-df_eod_filtered = df_eod[df_eod["Date"] == selected_date]
+df_eod_filtered = df_eod[df_eod["Date"] == selected_date] if not df_eod.empty else pd.DataFrame()
 df_eod_filtered["% Price Chg"] = pd.to_numeric(df_eod_filtered["% Price Chg"], errors="coerce")
 df_eod_filtered["% OI Chg"] = pd.to_numeric(df_eod_filtered["% OI Chg"], errors="coerce")
 st.dataframe(df_eod_filtered, use_container_width=True)
