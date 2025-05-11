@@ -21,7 +21,8 @@ def load_gsheet_client():
     missing_padding = len(b64_json) % 4
     if missing_padding:
         b64_json += "=" * (4 - missing_padding)
-    creds_dict = json.loads(base64.b64decode(b64_json))
+    creds_bytes = base64.b64decode(b64_json)
+    creds_dict = json.loads(creds_bytes.decode("utf-8"))
     credentials = Credentials.from_service_account_info(creds_dict)
     return gspread.authorize(credentials)
 
