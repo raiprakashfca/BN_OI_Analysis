@@ -2,15 +2,15 @@ name: EOD Rollover Analysis
 
 on:
   schedule:
-    - cron: '5 11 * * 1-5'  # 4:35 PM IST on weekdays
-  workflow_dispatch:
+    - cron: '45 10 * * 1-5'  # 3:15 PM IST every weekday (Mon–Fri)
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
 
 jobs:
   analyze-rollover:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout repository
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v3
 
       - name: 🐍 Set up Python
@@ -20,6 +20,7 @@ jobs:
 
       - name: 📦 Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: 🔐 Decode service account credentials
@@ -28,8 +29,8 @@ jobs:
         env:
           SERVICE_ACCOUNT_JSON_B64: ${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}
 
-      - name: ✅ Run analyze_rollover.py
-        run: |
-          python analyze_rollover.py
+      - name: 🧠 Run Rollover Analyzer
         env:
           SERVICE_ACCOUNT_JSON_B64: ${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}
+        run: |
+          python analyze_rollover.py
