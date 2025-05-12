@@ -1,4 +1,7 @@
+streamlit
 kiteconnect
 gspread
 pandas
 google-auth
+google-auth-oauthlib
+altair
