@@ -1,69 +1,92 @@
-# fetch_oi_futures.py — with debug logging and safety checks
-import pandas as pd
+# fetch_oi_futures.py — with caching, token validation, and rate-limit handling
+import os
+import json
+import base64
+import time
+import pickle
 import datetime as dt
+import pandas as pd
 from kiteconnect import KiteConnect
 from google.oauth2.service_account import Credentials
 import gspread
-import json
-import base64
-import os
-import sys
+import requests
 
-# --- CONFIG ---
+# === CONFIG ===
 TOKEN_SHEET_NAME = "ZerodhaTokenStore"
 OI_LOG_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
 OI_LOG_SHEET_NAME = "Sheet1"
 STOCKS = ["BANKNIFTY", "ICICIBANK", "HDFCBANK", "SBIN", "AXISBANK", "KOTAKBANK", "PNB", "BANKBARODA"]
-OI_SPIKE_THRESHOLD = 0.2
-PRICE_DIVERGENCE_THRESHOLD = 0.1
+CACHE_FILE = "instrument_cache.pkl"
 
-def is_trading_day():
-    today = dt.date.today()
-    return today.weekday() < 5
+def is_trading_hour():
+    now = dt.datetime.now()
+    if now.weekday() >= 5:
+        return False
+    return dt.time(9, 15) <= now.time() <= dt.time(15, 30)
 
-def load_kite_client():
-    print("🔐 Loading Kite credentials from environment...")
+def load_kite_and_gsheet():
+    print("🔐 Authenticating with Google Sheets...")
+    b64_json = os.getenv("SERVICE_ACCOUNT_JSON_B64")
+    if not b64_json:
+        raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64 env variable")
+    b64_json += "=" * ((4 - len(b64_json) % 4) % 4)  # padding
+    creds_dict = json.loads(base64.b64decode(b64_json).decode("utf-8"))
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds_b64 = os.getenv("SERVICE_ACCOUNT_JSON_B64")
-    if not creds_b64:
-        raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64")
-
-    padding = len(creds_b64) % 4
-    if padding:
-        creds_b64 += "=" * (4 - padding)
-
-    creds_dict = json.loads(base64.b64decode(creds_b64).decode("utf-8"))
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
     client = gspread.authorize(credentials)
 
+    print("📦 Loading Zerodha tokens from Google Sheets...")
     sheet = client.open(TOKEN_SHEET_NAME).sheet1
     api_key = sheet.acell("A1").value
     access_token = sheet.acell("C1").value
 
-    print(f"✅ API Key: {api_key[:4]}... Loaded, Access Token: Present = {bool(access_token)}")
-
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)
-    return kite, client
-
-def get_futures_tokens(kite):
-    print("📦 Fetching instruments...")
-    inst = kite.instruments("NSE") + kite.instruments("NFO")
-    df_inst = pd.DataFrame(inst)
-    df_fut = df_inst[(df_inst.segment == "NFO-FUT") & (df_inst.name.isin(STOCKS))]
-    print(f"✅ Found {len(df_fut)} active futures instruments")
-    return df_fut
-
-if __name__ == "__main__":
-    if not is_trading_day():
-        print("📅 Market is closed today.")
-        sys.exit()
 
     try:
-        kite, client = load_kite_client()
-        df_fut = get_futures_tokens(kite)
-        print(df_fut.head())
-        print("✅ Script completed successfully.")
+        profile = kite.profile()
+        print(f"✅ Token valid for user: {profile['user_name']}")
     except Exception as e:
-        print("❌ Exception occurred:", e)
-        raise
+        raise Exception("❌ Invalid Zerodha Access Token") from e
+
+    return kite, client
+
+def get_instrument_tokens(kite):
+    print("🧠 Caching instrument list...")
+    today = dt.date.today().isoformat()
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "rb") as f:
+            cache_data = pickle.load(f)
+        if cache_data.get("date") == today:
+            print("✅ Loaded cached instruments.")
+            return cache_data["data"]
+
+    print("📡 Fetching fresh instrument list from Zerodha...")
+    inst = kite.instruments("NSE") + kite.instruments("NFO")
+    df_inst = pd.DataFrame(inst)
+    df_fut = df_inst[(df_inst["segment"] == "NFO-FUT") & (df_inst["name"].isin(STOCKS))]
+    cache_data = {"date": today, "data": df_fut}
+    with open(CACHE_FILE, "wb") as f:
+        pickle.dump(cache_data, f)
+    return df_fut
+
+def main():
+    if not is_trading_hour():
+        print("⏰ Outside trading hours. Skipping execution.")
+        return
+
+    try:
+        kite, client = load_kite_and_gsheet()
+        df_fut = get_instrument_tokens(kite)
+        print(f"✅ Retrieved {len(df_fut)} futures instruments.")
+        # Add logic to process df_fut and log to Sheets if needed
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 429:
+            print("⚠️ API rate limit hit. Skipping this run.")
+        else:
+            raise
+    except Exception as ex:
+        print("❌ Error during execution:", ex)
+
+if __name__ == "__main__":
+    main()
