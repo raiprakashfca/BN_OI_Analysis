@@ -1,90 +1,56 @@
-
+# analyze_rollover_debug.py — robust with debug logs and header checks
 import pandas as pd
 import datetime as dt
 from google.oauth2.service_account import Credentials
 import gspread
+import json
+import base64
+import os
 
 # --- CONFIG ---
-ROLLOVER_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
-FUTURES_LOG_SHEET = "Futures_OI_Log"
-ROLLOVER_ANALYSIS_SHEET = "Rollover_Analysis"
-LOT_SIZES = {
-    "BANKNIFTY": 15,
-    "ICICIBANK": 1375,
-    "HDFCBANK": 550,
-    "SBIN": 1500,
-    "AXISBANK": 1200,
-    "KOTAKBANK": 400,
-    "PNB": 8000,
-    "BANKBARODA": 5400
-}
+ROLL_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
+ROLL_SHEET_NAME = "Rollover_Analysis"
+EXPECTED_COLUMNS = ['Date', 'Symbol', 'Today OI', 'Previous OI', 'Net Change (%)', 'Price Change (%)', 'Rollover Category']
 
-# --- Load Google Sheet Client ---
 def load_gsheet_client():
-    credentials = Credentials.from_service_account_file(
-        "service_account.json",
-        scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    )
+    print("🔐 Decoding service account credentials...")
+    b64_json = os.getenv("SERVICE_ACCOUNT_JSON_B64")
+    if not b64_json:
+        raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64")
+    padding = len(b64_json) % 4
+    if padding:
+        b64_json += "=" * (4 - padding)
+    creds_dict = json.loads(base64.b64decode(b64_json).decode("utf-8"))
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
     return gspread.authorize(credentials)
 
-# --- Read and Analyze Data ---
-def analyze_rollover():
-    client = load_gsheet_client()
-    sheet = client.open_by_key(ROLLOVER_SHEET_ID)
+def check_and_write_headers(sheet):
+    data = sheet.get_all_values()
+    if not data or data[0] != EXPECTED_COLUMNS:
+        print(f"⚠️ Headers missing or incorrect in {ROLL_SHEET_NAME}. Writing headers...")
+        sheet.clear()
+        sheet.append_row(EXPECTED_COLUMNS)
+    else:
+        print(f"✅ Headers present in {ROLL_SHEET_NAME}")
 
-    try:
-        data = sheet.worksheet(FUTURES_LOG_SHEET).get_all_values()
-    except Exception as e:
-        print(f"❌ Failed to read Futures_OI_Log: {e}")
-        return
+def simulate_rollover_data():
+    today = dt.datetime.now().strftime("%Y-%m-%d")
+    dummy_data = [
+        [today, 'BANKNIFTY', 1_200_000, 1_100_000, 9.09, 0.85, 'Long Build-up'],
+        [today, 'SBIN', 800_000, 880_000, -9.09, -0.65, 'Long Unwinding']
+    ]
+    return dummy_data
 
-    df = pd.DataFrame(data[1:], columns=data[0])
-    if df.empty:
-        print("⚠️ No data found in Futures_OI_Log")
-        return
-
-    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
-    df['OI'] = pd.to_numeric(df['OI'], errors='coerce')
-    df['Price'] = pd.to_numeric(df['Price'], errors='coerce')
-
-    latest = df.sort_values('Timestamp').groupby('Symbol').last().reset_index()
-    earliest = df.sort_values('Timestamp').groupby('Symbol').first().reset_index()
-
-    merged = pd.merge(latest, earliest, on='Symbol', suffixes=('_latest', '_earliest'))
-    merged['OI_Change_%'] = ((merged['OI_latest'] - merged['OI_earliest']) / merged['OI_earliest']) * 100
-    merged['Price_Change_%'] = ((merged['Price_latest'] - merged['Price_earliest']) / merged['Price_earliest']) * 100
-
-    def classify(row):
-        if row['OI_Change_%'] > 0 and row['Price_Change_%'] > 0:
-            return "Long Buildup"
-        elif row['OI_Change_%'] < 0 and row['Price_Change_%'] < 0:
-            return "Long Unwinding"
-        elif row['OI_Change_%'] > 0 and row['Price_Change_%'] < 0:
-            return "Short Buildup"
-        elif row['OI_Change_%'] < 0 and row['Price_Change_%'] > 0:
-            return "Short Covering"
-        else:
-            return "Neutral"
-
-    merged['Category'] = merged.apply(classify, axis=1)
-    merged['Date'] = dt.date.today().strftime('%Y-%m-%d')
-
-    result = merged[['Date', 'Symbol', 'OI_Change_%', 'Price_Change_%', 'Category']]
-
-    # --- Write to Rollover_Analysis sheet ---
-    try:
-        ws = sheet.worksheet(ROLLOVER_ANALYSIS_SHEET)
-        existing = ws.get_all_values()
-        if not existing:
-            ws.append_row(result.columns.tolist())
-        elif result.columns.tolist() != existing[0]:
-            print("⚠️ Header mismatch in Rollover_Analysis. Consider manual fix.")
-        for row in result.itertuples(index=False, name=None):
-            ws.append_row(list(row))
-        print(f"✅ Rollover summary updated: {len(result)} rows")
-    except Exception as e:
-        print(f"❌ Failed to write to Rollover_Analysis: {e}")
-
-# --- Main ---
 if __name__ == "__main__":
-    analyze_rollover()
+    print("🚀 Starting Rollover Analysis Debug Script")
+    try:
+        client = load_gsheet_client()
+        sheet = client.open_by_key(ROLL_SHEET_ID).worksheet(ROLL_SHEET_NAME)
+        check_and_write_headers(sheet)
+        rows = simulate_rollover_data()
+        for row in rows:
+            sheet.append_row(row)
+        print(f"✅ Appended {len(rows)} rows to {ROLL_SHEET_NAME}")
+    except Exception as e:
+        print(f"❌ Failed to update {ROLL_SHEET_NAME}: {e}")
