@@ -2,7 +2,7 @@ name: EOD Rollover Analysis
 
 on:
   schedule:
-    - cron: '5 11 * * 1-5'  # Every weekday at 4:35 PM IST (11:05 UTC)
+    - cron: '5 11 * * 1-5'  # 4:35 PM IST on weekdays
   workflow_dispatch:
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: 🔐 Decode Google credentials
+      - name: 🔐 Decode service account credentials
         run: |
           echo "$SERVICE_ACCOUNT_JSON_B64" | base64 --decode > service_account.json
         env:
