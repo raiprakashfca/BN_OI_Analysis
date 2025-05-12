@@ -1,4 +1,4 @@
-# fetch_futures_oi.py — with classification and anomaly detection
+# fetch_futures_oi.py — enhanced with header write + detailed debug
 import pandas as pd
 import datetime as dt
 from kiteconnect import KiteConnect
@@ -11,26 +11,21 @@ import sys
 
 # --- CONFIG ---
 TOKEN_SHEET_NAME = "ZerodhaTokenStore"
-OI_LOG_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
-OI_LOG_SHEET_NAME = "Sheet1"
+SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
+SHEET_NAME = "Futures_OI_Log"
 STOCKS = ["BANKNIFTY", "ICICIBANK", "HDFCBANK", "SBIN", "AXISBANK", "KOTAKBANK", "PNB", "BANKBARODA"]
-OI_SPIKE_THRESHOLD = 0.2  # 20%
-PRICE_DIVERGENCE_THRESHOLD = 0.1  # 10%
 
-# --- Check for weekend or holiday ---
-def is_trading_day():
-    today = dt.date.today()
-    return today.weekday() < 5
-
-# --- Load Zerodha Tokens from Google Sheet ---
 def load_kite_client():
+    print("🔐 Loading service account credentials...")
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds_b64 = os.getenv("SERVICE_ACCOUNT_JSON_B64")
     if not creds_b64:
         raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64")
+
     padding = len(creds_b64) % 4
     if padding:
-        creds_b64 += '=' * (4 - padding)
+        creds_b64 += "=" * (4 - padding)
+
     creds_dict = json.loads(base64.b64decode(creds_b64).decode("utf-8"))
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
     client = gspread.authorize(credentials)
@@ -39,52 +34,72 @@ def load_kite_client():
     api_key = sheet.acell("A1").value
     access_token = sheet.acell("C1").value
 
+    print("✅ API key and token retrieved.")
+
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)
     return kite, client
 
-# --- Detect Current Month Futures Token ---
-def get_futures_tokens(kite):
+def ensure_headers(ws, required_headers):
+    existing = ws.get_all_values()
+    if not existing or existing[0] != required_headers:
+        print("⚠️ Headers missing or incorrect — writing headers.")
+        ws.update("A1", [required_headers])
+    else:
+        print("✅ Headers already present.")
+
+def append_data(ws, row):
+    ws.append_row(row, value_input_option="USER_ENTERED")
+    print("✅ Row appended.")
+
+def fetch_and_log_futures_oi(kite, client):
+    print("📦 Fetching instruments...")
     inst = kite.instruments("NSE") + kite.instruments("NFO")
     df_inst = pd.DataFrame(inst)
-    df_fut = df_inst[(df_inst.segment == "NFO-FUT") & (df_inst.name.isin(STOCKS))]
-    today = dt.date.today()
-    return df_fut
+    df_fut = df_inst[(df_inst["segment"] == "NFO-FUT") & (df_inst["name"].isin(STOCKS))]
 
-# --- Ensure headers are in place ---
-def ensure_headers(worksheet, expected_headers):
-    existing = worksheet.row_values(1)
-    if existing != expected_headers:
-        worksheet.clear()
-        worksheet.insert_row(expected_headers, 1)
+    print(f"✅ {len(df_fut)} futures contracts found.")
+    df_fut["date"] = dt.datetime.now().strftime("%Y-%m-%d")
+    df_fut["time"] = dt.datetime.now().strftime("%H:%M:%S")
 
-# --- Header Check Logic ---
+    columns = ["date", "time", "name", "tradingsymbol", "expiry", "lot_size", "instrument_token", "last_price", "oi", "change_oi"]
+    data = []
 
-REQUIRED_HEADERS = [
-    "Date", "Time", "Stock", "LTP", "Volume", "OI", "OI Δ%", "Price Δ%", 
-    "Classification", "OI Spike", "Price Divergence"
-]
+    for _, row in df_fut.iterrows():
+        try:
+            quote = kite.ltp([row["instrument_token"]])[str(row["instrument_token"])]
+            ltp = quote["last_price"]
+            oi = quote.get("oi", 0)
+            data.append([
+                row["date"],
+                row["time"],
+                row["name"],
+                row["tradingsymbol"],
+                row["expiry"],
+                row["lot_size"],
+                row["instrument_token"],
+                ltp,
+                oi,
+                None  # placeholder for change_oi
+            ])
+            print(f"📈 {row['tradingsymbol']} LTP: {ltp}, OI: {oi}")
+        except Exception as e:
+            print(f"❌ Failed to fetch LTP for {row['tradingsymbol']}: {e}")
 
+    if not data:
+        print("⚠️ No data collected.")
+        return
 
-# --- Ensure Headers Exist ---
-def ensure_headers_exist(sheet, required_headers):
-    existing = sheet.row_values(1)
-    if existing != required_headers:
-        sheet.resize(rows=1)
-        sheet.update("A1", [required_headers])
-        print(f"✅ Headers written to sheet: {sheet.title}")
-    else:
-        print(f"✅ Headers already present in: {sheet.title}")
+    ws = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
+    ensure_headers(ws, columns)
+    for row in data:
+        append_data(ws, row)
 
-
-# --- Main Entry Point ---
 if __name__ == "__main__":
-    if not is_trading_day():
-        print("Market closed today. Skipping run.")
-        sys.exit()
-
-    kite, client = load_kite_client()
-        sheet = client.open_by_key(OI_LOG_SHEET_ID).worksheet(OI_LOG_SHEET_NAME)
-    ensure_headers_exist(sheet, REQUIRED_HEADERS)
-df_fut = get_futures_tokens(kite)
-    print("Fetched futures tokens for analysis.")
+    try:
+        kite, client = load_kite_client()
+        fetch_and_log_futures_oi(kite, client)
+        print("✅ Script completed successfully.")
+    except Exception as e:
+        print("❌ Exception occurred during fetch_futures_oi:", str(e))
+        raise
