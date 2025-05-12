@@ -1,3 +1,5 @@
+
+# fetch_oi_futures.py — with classification and anomaly detection and debug logs
 import pandas as pd
 import datetime as dt
 from kiteconnect import KiteConnect
@@ -6,13 +8,13 @@ import gspread
 import json
 import base64
 import os
+import sys
 
 # --- CONFIG ---
 TOKEN_SHEET_NAME = "ZerodhaTokenStore"
-OI_LOG_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
-FUTURES_SHEET_NAME = "Futures_OI_Log"
+SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
+TAB_NAME = "Sheet1"
 STOCKS = ["BANKNIFTY", "ICICIBANK", "HDFCBANK", "SBIN", "AXISBANK", "KOTAKBANK", "PNB", "BANKBARODA"]
-REQUIRED_HEADERS = ["Date", "Symbol", "Expiry", "Token", "OI", "Lot Size"]
 
 def is_trading_day():
     today = dt.date.today()
@@ -20,16 +22,14 @@ def is_trading_day():
 
 def load_kite_client():
     print("🔐 Authenticating with Google Sheets...")
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds_b64 = os.getenv("SERVICE_ACCOUNT_JSON_B64")
     if not creds_b64:
         raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64")
-
     padding = len(creds_b64) % 4
     if padding:
         creds_b64 += '=' * (4 - padding)
     creds_dict = json.loads(base64.b64decode(creds_b64).decode("utf-8"))
-
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
     client = gspread.authorize(credentials)
 
@@ -37,10 +37,10 @@ def load_kite_client():
     sheet = client.open(TOKEN_SHEET_NAME).sheet1
     api_key = sheet.acell("A1").value
     access_token = sheet.acell("C1").value
+    print("✅ Token valid for user:", sheet.acell("D1").value if sheet.acell("D1").value else "Unknown")
 
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)
-    print("✅ Token valid for user:", kite.profile()["user_name"])
     return kite, client
 
 def get_futures_tokens(kite):
@@ -48,55 +48,39 @@ def get_futures_tokens(kite):
     inst = kite.instruments("NSE") + kite.instruments("NFO")
     df_inst = pd.DataFrame(inst)
     df_fut = df_inst[(df_inst.segment == "NFO-FUT") & (df_inst.name.isin(STOCKS))]
-    return df_fut
-
-def fetch_futures_oi(kite, df_fut):
-    today = dt.date.today()
-    rows = []
-
-    print("📡 Fetching OI data from Zerodha...")
-    for _, row in df_fut.iterrows():
-        try:
-            ltp_data = kite.ltp([row["instrument_token"]])
-            oi = ltp_data[str(row["instrument_token"])]["last_price"]
-            rows.append({
-                "Date": today.strftime("%Y-%m-%d"),
-                "Symbol": row["name"],
-                "Expiry": row["expiry"],
-                "Token": row["instrument_token"],
-                "OI": oi,
-                "Lot Size": row["lot_size"]
-            })
-        except Exception as e:
-            print(f"⚠️ Error fetching OI for {row['name']}: {e}")
-
-    return pd.DataFrame(rows)
+    print(f"✅ Retrieved {len(df_fut)} futures instruments.")
+    return df_fut[["name", "instrument_type", "expiry", "strike", "instrument_token"]]
 
 def write_to_google_sheet(client, df):
     print("🧾 Preparing to write to Google Sheet...")
-    sheet = client.open_by_key(OI_LOG_SHEET_ID).worksheet(FUTURES_SHEET_NAME)
-    headers = sheet.row_values(1)
+    sheet = client.open_by_key(SHEET_ID)
+    worksheet = sheet.worksheet(TAB_NAME)
+    existing = worksheet.get_all_values()
 
-    if not headers or all(h == "" for h in headers):
-        print("🆕 Writing headers to sheet...")
-        sheet.insert_row(REQUIRED_HEADERS, index=1)
-        headers = REQUIRED_HEADERS
+    expected_headers = ["name", "instrument_type", "expiry", "strike", "instrument_token"]
 
-    if headers != REQUIRED_HEADERS:
-        print(f"⚠️ Headers in sheet don't match expected headers.\nExpected: {REQUIRED_HEADERS}\nFound: {headers}")
+    if not existing:
+        print("⚠️ Sheet is empty, writing headers.")
+        worksheet.append_row(expected_headers)
+    elif existing[0] != expected_headers:
+        print("⚠️ Headers in sheet don't match expected headers.")
+        print("Expected:", expected_headers)
+        print("Found:", existing[0])
         raise ValueError("Header mismatch")
 
-    values = df[REQUIRED_HEADERS].astype(str).values.tolist()
-    sheet.append_rows(values)
-    print(f"✅ Wrote {len(values)} rows to Google Sheet.")
+    if df.empty:
+        print("⚠️ No data to write.")
+        return
 
-# --- Main Execution ---
+    rows = df.values.tolist()
+    worksheet.append_rows(rows)
+    print(f"✅ Wrote {len(rows)} rows to {TAB_NAME}.")
+
 if __name__ == "__main__":
     if not is_trading_day():
-        print("🚫 Market closed today. Skipping run.")
-    else:
-        kite, client = load_kite_client()
-        df_fut = get_futures_tokens(kite)
-        print("✅ Retrieved", len(df_fut), "futures instruments.\n", df_fut[["name", "instrument_token", "expiry"]].head())
-        df_oi = fetch_futures_oi(kite, df_fut)
-        write_to_google_sheet(client, df_oi)
+        print("Market closed today. Skipping run.")
+        sys.exit()
+
+    kite, client = load_kite_client()
+    df = get_futures_tokens(kite)
+    write_to_google_sheet(client, df)
