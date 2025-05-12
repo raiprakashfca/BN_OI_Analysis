@@ -1,37 +1,32 @@
-# fetch_oi_futures.py — with caching, token validation, and rate-limit handling
-import os
-import json
-import base64
-import time
-import pickle
-import datetime as dt
 import pandas as pd
+import datetime as dt
 from kiteconnect import KiteConnect
 from google.oauth2.service_account import Credentials
 import gspread
-import requests
+import json
+import base64
+import os
 
-# === CONFIG ===
+# --- CONFIG ---
 TOKEN_SHEET_NAME = "ZerodhaTokenStore"
 OI_LOG_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
-OI_LOG_SHEET_NAME = "Sheet1"
+OI_LOG_SHEET_NAME = "Futures_OI_Log"
 STOCKS = ["BANKNIFTY", "ICICIBANK", "HDFCBANK", "SBIN", "AXISBANK", "KOTAKBANK", "PNB", "BANKBARODA"]
-CACHE_FILE = "instrument_cache.pkl"
 
-def is_trading_hour():
-    now = dt.datetime.now()
-    if now.weekday() >= 5:
-        return False
-    return dt.time(9, 15) <= now.time() <= dt.time(15, 30)
+def is_trading_day():
+    today = dt.date.today()
+    return today.weekday() < 5
 
-def load_kite_and_gsheet():
+def load_kite_client():
     print("🔐 Authenticating with Google Sheets...")
-    b64_json = os.getenv("SERVICE_ACCOUNT_JSON_B64")
-    if not b64_json:
-        raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64 env variable")
-    b64_json += "=" * ((4 - len(b64_json) % 4) % 4)  # padding
-    creds_dict = json.loads(base64.b64decode(b64_json).decode("utf-8"))
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds_b64 = os.getenv("SERVICE_ACCOUNT_JSON_B64")
+    if not creds_b64:
+        raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64")
+    padding = len(creds_b64) % 4
+    if padding:
+        creds_b64 += '=' * (4 - padding)
+    creds_dict = json.loads(base64.b64decode(creds_b64).decode("utf-8"))
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
     client = gspread.authorize(credentials)
 
@@ -39,54 +34,45 @@ def load_kite_and_gsheet():
     sheet = client.open(TOKEN_SHEET_NAME).sheet1
     api_key = sheet.acell("A1").value
     access_token = sheet.acell("C1").value
+    print("✅ Token valid for user:", sheet.acell("B1").value)
 
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)
-
-    try:
-        profile = kite.profile()
-        print(f"✅ Token valid for user: {profile['user_name']}")
-    except Exception as e:
-        raise Exception("❌ Invalid Zerodha Access Token") from e
-
     return kite, client
 
-def get_instrument_tokens(kite):
+def get_futures_tokens(kite):
     print("🧠 Caching instrument list...")
-    today = dt.date.today().isoformat()
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "rb") as f:
-            cache_data = pickle.load(f)
-        if cache_data.get("date") == today:
-            print("✅ Loaded cached instruments.")
-            return cache_data["data"]
-
-    print("📡 Fetching fresh instrument list from Zerodha...")
     inst = kite.instruments("NSE") + kite.instruments("NFO")
     df_inst = pd.DataFrame(inst)
-    df_fut = df_inst[(df_inst["segment"] == "NFO-FUT") & (df_inst["name"].isin(STOCKS))]
-    cache_data = {"date": today, "data": df_fut}
-    with open(CACHE_FILE, "wb") as f:
-        pickle.dump(cache_data, f)
+    df_fut = df_inst[(df_inst.segment == "NFO-FUT") & (df_inst.name.isin(STOCKS))]
     return df_fut
 
-def main():
-    if not is_trading_hour():
-        print("⏰ Outside trading hours. Skipping execution.")
-        return
+def write_to_google_sheet(client, df):
+    print("🧾 Preparing to write to Google Sheet...")
+    sheet = client.open_by_key(OI_LOG_SHEET_ID).worksheet(OI_LOG_SHEET_NAME)
+    existing_data = sheet.get_all_values()
 
-    try:
-        kite, client = load_kite_and_gsheet()
-        df_fut = get_instrument_tokens(kite)
-        print(f"✅ Retrieved {len(df_fut)} futures instruments.")
-        # Add logic to process df_fut and log to Sheets if needed
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 429:
-            print("⚠️ API rate limit hit. Skipping this run.")
-        else:
-            raise
-    except Exception as ex:
-        print("❌ Error during execution:", ex)
+    if not existing_data:
+        print("📋 Writing headers...")
+        sheet.append_row(df.columns.tolist())
+    elif df.columns.tolist() != existing_data[0]:
+        print("⚠️ Headers in sheet don't match expected headers.")
+        print("Expected:", df.columns.tolist())
+        print("Found:", existing_data[0])
+        raise ValueError("Header mismatch")
+
+    for _, row in df.iterrows():
+        sheet.append_row(row.astype(str).tolist())
+    print("✅ Successfully wrote data to sheet.")
 
 if __name__ == "__main__":
-    main()
+    if not is_trading_day():
+        print("Market closed today. Skipping run.")
+        exit()
+
+    kite, client = load_kite_client()
+    df_fut = get_futures_tokens(kite)
+    print("✅ Retrieved", len(df_fut), "futures instruments.")
+    print(df_fut[["name", "instrument_type", "expiry", "strike", "instrument_token"]].head())
+
+    write_to_google_sheet(client, df_fut)
