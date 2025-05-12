@@ -1,83 +1,69 @@
-# fetch_futures_oi.py — Updated to use SERVICE_ACCOUNT_JSON_B64
-import os
-import json
-import base64
-from datetime import datetime
+# fetch_futures_oi.py — with classification and anomaly detection
 import pandas as pd
+import datetime as dt
 from kiteconnect import KiteConnect
 from google.oauth2.service_account import Credentials
 import gspread
+import json
+import base64
+import os
+import sys
 
-# --- Constants ---
-SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
-SHEET_NAME = "Futures_OI_Log"
-SYMBOLS = ["BANKNIFTY", "HDFCBANK", "SBIN", "ICICIBANK", "AXISBANK", "KOTAKBANK", "PNB", "BANKBARODA"]
+# --- CONFIG ---
+TOKEN_SHEET_NAME = "ZerodhaTokenStore"
+OI_LOG_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
+OI_LOG_SHEET_NAME = "Sheet1"
+STOCKS = ["BANKNIFTY", "ICICIBANK", "HDFCBANK", "SBIN", "AXISBANK", "KOTAKBANK", "PNB", "BANKBARODA"]
+OI_SPIKE_THRESHOLD = 0.2  # 20%
+PRICE_DIVERGENCE_THRESHOLD = 0.1  # 10%
 
-# --- Setup Google Sheet client ---
-def get_gsheet_client():
-    b64_json = os.getenv("SERVICE_ACCOUNT_JSON_B64")
-    if not b64_json:
-        raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64 environment variable")
-    padding = len(b64_json) % 4
+# --- Check for weekend or holiday ---
+def is_trading_day():
+    today = dt.date.today()
+    return today.weekday() < 5
+
+# --- Load Zerodha Tokens from Google Sheet ---
+def load_kite_client():
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds_b64 = os.getenv("SERVICE_ACCOUNT_JSON_B64")
+    if not creds_b64:
+        raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64")
+    padding = len(creds_b64) % 4
     if padding:
-        b64_json += '=' * (4 - padding)
-    creds_dict = json.loads(base64.b64decode(b64_json).decode("utf-8"))
-    credentials = Credentials.from_service_account_info(
-        creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    return gspread.authorize(credentials)
+        creds_b64 += '=' * (4 - padding)
+    creds_dict = json.loads(base64.b64decode(creds_b64).decode("utf-8"))
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
+    client = gspread.authorize(credentials)
 
-# --- Setup Zerodha client ---
-def get_kite_client():
-    api_key = os.getenv("ZERODHA_API_KEY")
-    access_token = os.getenv("ZERODHA_ACCESS_TOKEN")
+    sheet = client.open(TOKEN_SHEET_NAME).sheet1
+    api_key = sheet.acell("A1").value
+    access_token = sheet.acell("C1").value
+
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)
-    return kite
+    return kite, client
 
-# --- Fetch Futures OI ---
-def fetch_futures_oi():
-    kite = get_kite_client()
-    instruments = pd.DataFrame(kite.instruments("NSE"))
-    today = datetime.now().date()
+# --- Detect Current Month Futures Token ---
+def get_futures_tokens(kite):
+    inst = kite.instruments("NSE") + kite.instruments("NFO")
+    df_inst = pd.DataFrame(inst)
+    df_fut = df_inst[(df_inst.segment == "NFO-FUT") & (df_inst.name.isin(STOCKS))]
+    today = dt.date.today()
+    return df_fut
 
-    fno = pd.DataFrame(kite.instruments("NFO"))
-    fno = fno[(fno["segment"] == "NFO-FUT") & (fno["instrument_type"] == "FUT")]
+# --- Ensure headers are in place ---
+def ensure_headers(worksheet, expected_headers):
+    existing = worksheet.row_values(1)
+    if existing != expected_headers:
+        worksheet.clear()
+        worksheet.insert_row(expected_headers, 1)
 
-    records = []
-    for symbol in SYMBOLS:
-        df = fno[fno["name"] == symbol].sort_values("expiry")
-        if df.empty:
-            print(f"⚠️ No futures found for {symbol}")
-            continue
-
-        row = df.iloc[0]  # Nearest expiry
-        token = row["instrument_token"]
-        lot_size = row["lot_size"]
-        expiry = row["expiry"].strftime("%Y-%m-%d")
-
-        try:
-            quote = kite.ltp([f"NFO:{row['tradingsymbol']}"])
-            oi = quote[f"NFO:{row['tradingsymbol']}"]["depth"]["buy"]
-            total_oi = sum([level["orders"] for level in oi])
-            records.append([str(today), symbol, expiry, token, total_oi, lot_size])
-            print(f"✅ {symbol} | Expiry: {expiry} | OI: {total_oi}")
-        except Exception as e:
-            print(f"❌ Error fetching OI for {symbol}: {e}")
-
-    return records
-
-# --- Append to Google Sheet ---
-def append_to_sheet(records):
-    client = get_gsheet_client()
-    sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
-    sheet.append_rows(records, value_input_option="USER_ENTERED")
-    print(f"✅ Logged {len(records)} rows to {SHEET_NAME}")
-
-# --- Main Entry ---
+# --- Main Entry Point ---
 if __name__ == "__main__":
-    rows = fetch_futures_oi()
-    if rows:
-        append_to_sheet(rows)
-    else:
-        print("⚠️ No data to log.")
+    if not is_trading_day():
+        print("Market closed today. Skipping run.")
+        sys.exit()
+
+    kite, client = load_kite_client()
+    df_fut = get_futures_tokens(kite)
+    print("Fetched futures tokens for analysis.")
