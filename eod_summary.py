@@ -1,4 +1,4 @@
-# eod_summary.py — writes EOD summary to Google Sheets with header check
+
 import pandas as pd
 import datetime as dt
 import gspread
@@ -8,18 +8,10 @@ import os
 from google.oauth2.service_account import Credentials
 
 # --- CONFIG ---
-SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
+OI_LOG_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
 SHEET_NAME = "EOD_Summary"
-HEADERS = ["Date", "Symbol", "LTP", "Open Interest", "Volume", "Price Change %", "OI Change %", "Classification"]
+HEADERS = ["Date", "Symbol", "Start OI", "End OI", "Net OI Change (%)", "Start Price", "End Price", "Price Change (%)", "Classification", "Anomaly"]
 
-# --- Ensure headers ---
-def ensure_headers(ws, expected_headers):
-    existing = ws.row_values(1)
-    if existing != expected_headers:
-        ws.clear()
-        ws.insert_row(expected_headers, 1)
-
-# --- Load GSheet Client ---
 def load_gsheet_client():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds_b64 = os.getenv("SERVICE_ACCOUNT_JSON_B64")
@@ -27,19 +19,26 @@ def load_gsheet_client():
         raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64")
     padding = len(creds_b64) % 4
     if padding:
-        creds_b64 += '=' * (4 - padding)
+        creds_b64 += "=" * (4 - padding)
     creds_dict = json.loads(base64.b64decode(creds_b64).decode("utf-8"))
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
-    return gspread.authorize(credentials)
+    client = gspread.authorize(credentials)
+    return client
 
-# --- Main Logic ---
-if __name__ == "__main__":
+def ensure_headers(client, sheet_name, required_headers):
+    sheet = client.open_by_key(OI_LOG_SHEET_ID).worksheet(sheet_name)
+    data = sheet.get_all_values()
+    if not data or data[0] != required_headers:
+        print(f"⚠️ Updating headers in sheet: {sheet_name}")
+        sheet.clear()
+        sheet.insert_row(required_headers, 1)
+    else:
+        print(f"✅ Headers present in sheet: {sheet_name}")
+
+def main():
     client = load_gsheet_client()
-    ws = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
-    ensure_headers(ws, HEADERS)
+    ensure_headers(client, SHEET_NAME, HEADERS)
+    print("✅ EOD_Summary headers check completed.")
 
-    # Dummy test entry
-    today = dt.datetime.now().strftime("%Y-%m-%d")
-    row = [today, "BANKNIFTY", 48720, 2.3e6, 7.1e6, 1.4, 2.2, "Long Buildup"]
-    ws.append_row(row)
-    print("✅ EOD Summary updated.")
+if __name__ == "__main__":
+    main()
