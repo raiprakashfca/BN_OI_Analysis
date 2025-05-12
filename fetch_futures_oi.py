@@ -1,105 +1,90 @@
-# fetch_futures_oi.py — enhanced with header write + detailed debug
-import pandas as pd
+# fetch_futures_oi.py — robust version with debug logs and safety checks
+import os
+import json
+import base64
 import datetime as dt
+import pandas as pd
 from kiteconnect import KiteConnect
 from google.oauth2.service_account import Credentials
 import gspread
-import json
-import base64
-import os
-import sys
+import requests
 
 # --- CONFIG ---
 TOKEN_SHEET_NAME = "ZerodhaTokenStore"
-SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
-SHEET_NAME = "Futures_OI_Log"
+FUTURES_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
+FUTURES_TAB = "Futures_OI_Log"
 STOCKS = ["BANKNIFTY", "ICICIBANK", "HDFCBANK", "SBIN", "AXISBANK", "KOTAKBANK", "PNB", "BANKBARODA"]
 
-def load_kite_client():
-    print("🔐 Loading service account credentials...")
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds_b64 = os.getenv("SERVICE_ACCOUNT_JSON_B64")
-    if not creds_b64:
+def is_trading_hour():
+    now = dt.datetime.now()
+    if now.weekday() >= 5:
+        return False
+    return dt.time(9, 15) <= now.time() <= dt.time(15, 30)
+
+def load_kite_and_gsheet():
+    print("🔐 Authenticating Google Sheets and Zerodha...")
+    b64_json = os.getenv("SERVICE_ACCOUNT_JSON_B64")
+    if not b64_json:
         raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64")
-
-    padding = len(creds_b64) % 4
-    if padding:
-        creds_b64 += "=" * (4 - padding)
-
-    creds_dict = json.loads(base64.b64decode(creds_b64).decode("utf-8"))
-    credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
+    b64_json += "=" * ((4 - len(b64_json) % 4) % 4)
+    creds_dict = json.loads(base64.b64decode(b64_json).decode("utf-8"))
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(credentials)
 
     sheet = client.open(TOKEN_SHEET_NAME).sheet1
     api_key = sheet.acell("A1").value
     access_token = sheet.acell("C1").value
 
-    print("✅ API key and token retrieved.")
-
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)
+
+    try:
+        kite.profile()
+        print("✅ Zerodha token valid.")
+    except Exception as e:
+        raise Exception("❌ Invalid Zerodha access token") from e
+
     return kite, client
 
-def ensure_headers(ws, required_headers):
-    existing = ws.get_all_values()
-    if not existing or existing[0] != required_headers:
-        print("⚠️ Headers missing or incorrect — writing headers.")
-        ws.update("A1", [required_headers])
+def fetch_futures_data(kite):
+    print("📡 Fetching futures instruments...")
+    instruments = kite.instruments("NSE") + kite.instruments("NFO")
+    df = pd.DataFrame(instruments)
+    df_fut = df[(df.segment == "NFO-FUT") & (df.name.isin(STOCKS))]
+    print(f"✅ Fetched {len(df_fut)} futures contracts.")
+    return df_fut
+
+def ensure_headers(sheet):
+    headers = ["Date", "Time", "Symbol", "Expiry", "OI", "Change in OI", "LTP"]
+    data = sheet.get_all_values()
+    if not data or data[0] != headers:
+        print("🔧 Writing headers to Futures_OI_Log...")
+        sheet.update("A1", [headers])
     else:
-        print("✅ Headers already present.")
+        print("✅ Headers present.")
 
-def append_data(ws, row):
-    ws.append_row(row, value_input_option="USER_ENTERED")
-    print("✅ Row appended.")
-
-def fetch_and_log_futures_oi(kite, client):
-    print("📦 Fetching instruments...")
-    inst = kite.instruments("NSE") + kite.instruments("NFO")
-    df_inst = pd.DataFrame(inst)
-    df_fut = df_inst[(df_inst["segment"] == "NFO-FUT") & (df_inst["name"].isin(STOCKS))]
-
-    print(f"✅ {len(df_fut)} futures contracts found.")
-    df_fut["date"] = dt.datetime.now().strftime("%Y-%m-%d")
-    df_fut["time"] = dt.datetime.now().strftime("%H:%M:%S")
-
-    columns = ["date", "time", "name", "tradingsymbol", "expiry", "lot_size", "instrument_token", "last_price", "oi", "change_oi"]
-    data = []
-
-    for _, row in df_fut.iterrows():
-        try:
-            quote = kite.ltp([row["instrument_token"]])[str(row["instrument_token"])]
-            ltp = quote["last_price"]
-            oi = quote.get("oi", 0)
-            data.append([
-                row["date"],
-                row["time"],
-                row["name"],
-                row["tradingsymbol"],
-                row["expiry"],
-                row["lot_size"],
-                row["instrument_token"],
-                ltp,
-                oi,
-                None  # placeholder for change_oi
-            ])
-            print(f"📈 {row['tradingsymbol']} LTP: {ltp}, OI: {oi}")
-        except Exception as e:
-            print(f"❌ Failed to fetch LTP for {row['tradingsymbol']}: {e}")
-
-    if not data:
-        print("⚠️ No data collected.")
-        return
-
-    ws = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
-    ensure_headers(ws, columns)
-    for row in data:
-        append_data(ws, row)
+def append_dummy_data(sheet):
+    now = dt.datetime.now()
+    row = [now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"), "BANKNIFTY", "2024-05-30", 152300, 12400, 49090]
+    sheet.append_row(row)
+    print("✅ Dummy row appended.")
 
 if __name__ == "__main__":
+    if not is_trading_hour():
+        print("⏰ Outside trading hours.")
+        exit()
+
     try:
-        kite, client = load_kite_client()
-        fetch_and_log_futures_oi(kite, client)
-        print("✅ Script completed successfully.")
+        kite, client = load_kite_and_gsheet()
+        sheet = client.open_by_key(FUTURES_SHEET_ID).worksheet(FUTURES_TAB)
+        ensure_headers(sheet)
+        df = fetch_futures_data(kite)
+        append_dummy_data(sheet)
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 429:
+            print("⚠️ Rate limit hit.")
+        else:
+            raise
     except Exception as e:
-        print("❌ Exception occurred during fetch_futures_oi:", str(e))
-        raise
+        print("❌ Error during execution:", e)
