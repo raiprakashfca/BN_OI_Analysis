@@ -1,5 +1,3 @@
-
-# fetch_futures_oi.py — debug version to write EOD futures data
 import pandas as pd
 import datetime as dt
 from kiteconnect import KiteConnect
@@ -8,75 +6,73 @@ import gspread
 import json
 import base64
 import os
-import sys
 
+# --- Constants ---
 TOKEN_SHEET_NAME = "ZerodhaTokenStore"
-SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
-TAB_NAME = "EOD_Summary"
+GSHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
+GSHEET_TAB = "EOD_Summary"
+REQUIRED_HEADERS = [
+    "Date", "Symbol", "Start OI", "End OI", "Net OI Change (%)",
+    "Start Price", "End Price", "Price Change (%)", "Classification", "Anomaly"
+]
 
-def is_trading_day():
-    today = dt.date.today()
-    return today.weekday() < 5
-
-def load_kite_client():
+# --- Load Google Sheet Client ---
+def load_gsheet_client():
     print("🔐 Authenticating with Google Sheets...")
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds_b64 = os.getenv("SERVICE_ACCOUNT_JSON_B64")
     if not creds_b64:
         raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64")
     padding = len(creds_b64) % 4
     if padding:
-        creds_b64 += '=' * (4 - padding)
+        creds_b64 += "=" * (4 - padding)
     creds_dict = json.loads(base64.b64decode(creds_b64).decode("utf-8"))
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
-    client = gspread.authorize(credentials)
+    return gspread.authorize(credentials)
 
+# --- Load Kite Tokens ---
+def load_kite_client(client):
     print("📦 Loading Zerodha tokens from Google Sheets...")
     sheet = client.open(TOKEN_SHEET_NAME).sheet1
     api_key = sheet.acell("A1").value
     access_token = sheet.acell("C1").value
-
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)
-    return kite, client
+    return kite
 
+# --- Simulate EOD Data ---
+def generate_dummy_eod():
+    print("📊 Simulating EOD data for testing...")
+    today = dt.date.today().strftime("%Y-%m-%d")
+    return pd.DataFrame([
+        [today, "BANKNIFTY", 1_500_000, 1_800_000, 20.0, 48700, 48950, 0.51, "Long Build-up", ""],
+        [today, "AXISBANK", 2_300_000, 1_900_000, -17.4, 1210, 1180, -2.48, "Long Unwinding", ""]
+    ], columns=REQUIRED_HEADERS)
+
+# --- Write to Google Sheet ---
 def write_to_google_sheet(client, df):
     print("🧾 Preparing to write EOD Summary...")
-    sheet = client.open_by_key(SHEET_ID)
-    worksheet = sheet.worksheet(TAB_NAME)
-    existing = worksheet.get_all_values()
+    sheet = client.open_by_key(GSHEET_ID)
+    try:
+        worksheet = sheet.worksheet(GSHEET_TAB)
+    except gspread.exceptions.WorksheetNotFound:
+        print(f"⚠️ Sheet '{GSHEET_TAB}' not found. Creating new...")
+        worksheet = sheet.add_worksheet(title=GSHEET_TAB, rows="1000", cols="20")
 
-    expected_headers = ["Date", "Symbol", "LTP", "Change %", "Volume"]
-
-    if not existing:
-        print("⚠️ Sheet is empty, writing headers.")
-        worksheet.append_row(expected_headers)
-    elif existing[0] != expected_headers:
+    current_headers = worksheet.row_values(1)
+    if current_headers != REQUIRED_HEADERS:
         print("⚠️ Headers mismatch.")
-        raise ValueError("Header mismatch")
+        worksheet.clear()
+        worksheet.append_row(REQUIRED_HEADERS)
 
-    if df.empty:
-        print("⚠️ No EOD data to write.")
-        return
+    print(f"📤 Writing {len(df)} rows to Google Sheet...")
+    worksheet.append_rows(df.values.tolist(), value_input_option="USER_ENTERED")
+    print("✅ Write complete.")
 
-    rows = df.values.tolist()
-    worksheet.append_rows(rows)
-    print(f"✅ Wrote {len(rows)} rows to {TAB_NAME}.")
-
+# --- Main Entry ---
 if __name__ == "__main__":
-    if not is_trading_day():
-        print("Market closed today. Skipping run.")
-        sys.exit()
-
-    kite, client = load_kite_client()
-
-    print("📊 Simulating EOD data for testing...")
-    data = {
-        "Date": [str(dt.date.today())] * 2,
-        "Symbol": ["BANKNIFTY", "AXISBANK"],
-        "LTP": [48800, 1168],
-        "Change %": [0.55, -0.78],
-        "Volume": [152430, 348000]
-    }
-    df = pd.DataFrame(data)
+    client = load_gsheet_client()
+    kite = load_kite_client(client)
+    df = generate_dummy_eod()
     write_to_google_sheet(client, df)
+    print("🎯 Script execution finished.")
