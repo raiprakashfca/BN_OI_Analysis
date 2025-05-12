@@ -3,7 +3,7 @@ name: EOD Rollover Analysis
 on:
   schedule:
     - cron: '5 11 * * 1-5'  # Every weekday at 4:35 PM IST (11:05 UTC)
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
 
 jobs:
   analyze-rollover:
@@ -29,7 +29,7 @@ jobs:
           SERVICE_ACCOUNT_JSON_B64: ${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}
 
       - name: ✅ Run analyze_rollover.py
-        env:
-          SERVICE_ACCOUNT_JSON_B64: ${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}
         run: |
           python analyze_rollover.py
+        env:
+          SERVICE_ACCOUNT_JSON_B64: ${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}
