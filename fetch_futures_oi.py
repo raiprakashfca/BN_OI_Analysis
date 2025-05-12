@@ -1,35 +1,38 @@
-# fetch_futures_oi.py — robust version with debug logs and safety checks
-import os
-import json
-import base64
-import datetime as dt
+
+# fetch_futures_oi.py — with detailed logging and header safety
 import pandas as pd
+import datetime as dt
 from kiteconnect import KiteConnect
 from google.oauth2.service_account import Credentials
 import gspread
-import requests
+import json
+import base64
+import os
 
-# --- CONFIG ---
 TOKEN_SHEET_NAME = "ZerodhaTokenStore"
-FUTURES_SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
-FUTURES_TAB = "Futures_OI_Log"
-STOCKS = ["BANKNIFTY", "ICICIBANK", "HDFCBANK", "SBIN", "AXISBANK", "KOTAKBANK", "PNB", "BANKBARODA"]
+FUTURES_OI_SHEET_NAME = "Futures_OI_Log"
+SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
 
-def is_trading_hour():
-    now = dt.datetime.now()
-    if now.weekday() >= 5:
-        return False
-    return dt.time(9, 15) <= now.time() <= dt.time(15, 30)
+HEADERS = ["Date", "Time", "Symbol", "Open Interest", "Change %", "Price", "Action"]
 
-def load_kite_and_gsheet():
-    print("🔐 Authenticating Google Sheets and Zerodha...")
-    b64_json = os.getenv("SERVICE_ACCOUNT_JSON_B64")
-    if not b64_json:
+def log(message):
+    print(f"🔍 {message}", flush=True)
+
+def is_trading_day():
+    today = dt.date.today()
+    return today.weekday() < 5
+
+def load_kite_client():
+    log("Loading Kite client and Google credentials...")
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds_b64 = os.getenv("SERVICE_ACCOUNT_JSON_B64")
+    if not creds_b64:
         raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64")
-    b64_json += "=" * ((4 - len(b64_json) % 4) % 4)
-    creds_dict = json.loads(base64.b64decode(b64_json).decode("utf-8"))
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    padding = len(creds_b64) % 4
+    if padding:
+        creds_b64 += '=' * (4 - padding)
+    creds_dict = json.loads(base64.b64decode(creds_b64).decode("utf-8"))
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
     client = gspread.authorize(credentials)
 
     sheet = client.open(TOKEN_SHEET_NAME).sheet1
@@ -38,53 +41,49 @@ def load_kite_and_gsheet():
 
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)
-
-    try:
-        kite.profile()
-        print("✅ Zerodha token valid.")
-    except Exception as e:
-        raise Exception("❌ Invalid Zerodha access token") from e
-
+    log("✅ Kite client and token loaded successfully.")
     return kite, client
 
-def fetch_futures_data(kite):
-    print("📡 Fetching futures instruments...")
-    instruments = kite.instruments("NSE") + kite.instruments("NFO")
-    df = pd.DataFrame(instruments)
-    df_fut = df[(df.segment == "NFO-FUT") & (df.name.isin(STOCKS))]
-    print(f"✅ Fetched {len(df_fut)} futures contracts.")
-    return df_fut
-
-def ensure_headers(sheet):
-    headers = ["Date", "Time", "Symbol", "Expiry", "OI", "Change in OI", "LTP"]
-    data = sheet.get_all_values()
-    if not data or data[0] != headers:
-        print("🔧 Writing headers to Futures_OI_Log...")
-        sheet.update("A1", [headers])
+def ensure_headers(worksheet, headers):
+    existing = worksheet.row_values(1)
+    if existing != headers:
+        log("⚠️ Headers not found or mismatched. Updating headers...")
+        worksheet.clear()
+        worksheet.insert_row(headers, index=1)
     else:
-        print("✅ Headers present.")
+        log("✅ Headers verified.")
 
-def append_dummy_data(sheet):
-    now = dt.datetime.now()
-    row = [now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"), "BANKNIFTY", "2024-05-30", 152300, 12400, 49090]
-    sheet.append_row(row)
-    print("✅ Dummy row appended.")
+def fetch_and_log_data(kite, sheet):
+    log("Fetching instrument list...")
+    instruments = pd.DataFrame(kite.instruments("NFO"))
+    symbols = ["BANKNIFTY", "ICICIBANK", "HDFCBANK", "SBIN", "AXISBANK", "KOTAKBANK", "PNB", "BANKBARODA"]
+    now = dt.datetime.now().strftime("%H:%M")
+    today = dt.datetime.now().strftime("%Y-%m-%d")
+    worksheet = sheet.worksheet(FUTURES_OI_SHEET_NAME)
+    ensure_headers(worksheet, HEADERS)
+
+    log("Scanning futures contracts for target symbols...")
+    for symbol in symbols:
+        try:
+            row = instruments[(instruments.name == symbol) & (instruments.segment == "NFO-FUT")].iloc[0]
+            token = int(row["instrument_token"])
+            ltp = kite.ltp([token])[str(token)]["last_price"]
+            oi = row["open_interest"]
+            change = row["change_oi"]
+            action = "Logged"
+            data = [today, now, symbol, oi, change, ltp, action]
+            worksheet.append_row(data)
+            log(f"✅ {symbol} logged successfully.")
+        except Exception as e:
+            log(f"❌ Failed to process {symbol}: {str(e)}")
 
 if __name__ == "__main__":
-    if not is_trading_hour():
-        print("⏰ Outside trading hours.")
+    log("🚀 Starting fetch_futures_oi.py")
+    if not is_trading_day():
+        log("⛔ Market closed today.")
         exit()
 
-    try:
-        kite, client = load_kite_and_gsheet()
-        sheet = client.open_by_key(FUTURES_SHEET_ID).worksheet(FUTURES_TAB)
-        ensure_headers(sheet)
-        df = fetch_futures_data(kite)
-        append_dummy_data(sheet)
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 429:
-            print("⚠️ Rate limit hit.")
-        else:
-            raise
-    except Exception as e:
-        print("❌ Error during execution:", e)
+    kite, client = load_kite_client()
+    sheet = client.open_by_key(SHEET_ID)
+    fetch_and_log_data(kite, sheet)
+    log("🏁 Script completed.")
