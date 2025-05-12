@@ -58,6 +58,25 @@ def ensure_headers(worksheet, expected_headers):
         worksheet.clear()
         worksheet.insert_row(expected_headers, 1)
 
+# --- Header Check Logic ---
+
+REQUIRED_HEADERS = [
+    "Date", "Time", "Stock", "LTP", "Volume", "OI", "OI Δ%", "Price Δ%", 
+    "Classification", "OI Spike", "Price Divergence"
+]
+
+
+# --- Ensure Headers Exist ---
+def ensure_headers_exist(sheet, required_headers):
+    existing = sheet.row_values(1)
+    if existing != required_headers:
+        sheet.resize(rows=1)
+        sheet.update("A1", [required_headers])
+        print(f"✅ Headers written to sheet: {sheet.title}")
+    else:
+        print(f"✅ Headers already present in: {sheet.title}")
+
+
 # --- Main Entry Point ---
 if __name__ == "__main__":
     if not is_trading_day():
@@ -65,5 +84,7 @@ if __name__ == "__main__":
         sys.exit()
 
     kite, client = load_kite_client()
-    df_fut = get_futures_tokens(kite)
+        sheet = client.open_by_key(OI_LOG_SHEET_ID).worksheet(OI_LOG_SHEET_NAME)
+    ensure_headers_exist(sheet, REQUIRED_HEADERS)
+df_fut = get_futures_tokens(kite)
     print("Fetched futures tokens for analysis.")
