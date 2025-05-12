@@ -1,9 +1,9 @@
-name: EOD OI Summary
+name: EOD Summary
 
 on:
   schedule:
-    - cron: '15 10 * * 1-5'  # Runs every weekday at 3:45 PM IST (10:15 UTC)
-  workflow_dispatch:  # Allows manual trigger too
+    - cron: '20 10 * * 1-5'  # 3:50 PM IST
+  workflow_dispatch:
 
 jobs:
   eod-summary:
@@ -19,15 +19,9 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-
-      - name: Decode service account credentials from base64
-        run: |
-          echo "$SERVICE_ACCOUNT_JSON_B64" | base64 --decode > service_account.json
-        env:
-          SERVICE_ACCOUNT_JSON_B64: ${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}
+        run: pip install -r requirements.txt
 
       - name: Run EOD Summary Script
-        run: |
-          python fetch_oi_futures.py
+        run: python eod_summary.py
+        env:
+          SERVICE_ACCOUNT_JSON_B64: ${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}
