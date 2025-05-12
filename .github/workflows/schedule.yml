@@ -3,14 +3,14 @@ name: Scheduled OI Fetch
 on:
   schedule:
     - cron: '*/15 3-10 * * 1-5'  # Every 15 mins from 9:15 to 15:30 IST (3–10 UTC)
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger support
 
 jobs:
-  fetch-oi:
+  fetch-intraday-oi:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout Repository
+      - name: ✅ Checkout repository
         uses: actions/checkout@v3
 
       - name: 🐍 Set up Python
@@ -18,19 +18,21 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 📦 Install dependencies
+      - name: 📦 Install Python dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 🔐 Decode service account credentials
+      - name: 🔐 Decode service account JSON
         run: |
+          if [[ -z "$SERVICE_ACCOUNT_JSON_B64" ]]; then
+            echo "❌ SERVICE_ACCOUNT_JSON_B64 secret not found."
+            exit 1
+          fi
           echo "$SERVICE_ACCOUNT_JSON_B64" | base64 --decode > service_account.json
         env:
           SERVICE_ACCOUNT_JSON_B64: ${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}
 
-      - name: 🧠 Run OI Fetch Script
-        env:
-          SERVICE_ACCOUNT_JSON_B64: ${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}
+      - name: ▶️ Run Intraday OI Fetch Script
         run: |
+          echo "🔁 Running fetch_oi_futures.py for intraday logging..."
           python fetch_oi_futures.py
