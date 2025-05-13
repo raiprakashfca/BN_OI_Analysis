@@ -22,9 +22,9 @@ BANKNIFTY_COMPONENTS = [
 ]
 
 NSE_HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Accept": "application/json",
+    "Referer": "https://www.nseindia.com/",
     "Connection": "keep-alive"
 }
 
@@ -46,16 +46,23 @@ def write_to_google_sheet(sheet_client, df):
     validate_and_write_headers(ws)
     ws.append_rows(df.values.tolist())
 
-# --- NSE Scraper ---
+# --- NSE SCRAPER ---
 def fetch_futures_oi(symbol):
     url = f"https://www.nseindia.com/api/quote-derivative?symbol={symbol}"
     session = requests.Session()
     session.headers.update(NSE_HEADERS)
 
     try:
-        session.get("https://www.nseindia.com", timeout=5)
-        sleep(1)
+        # Get cookies to avoid 403
+        session.get("https://www.nseindia.com", timeout=10)
+        sleep(1.5)
+
         res = session.get(url, timeout=10)
+
+        # Check response type
+        if "application/json" not in res.headers.get("Content-Type", ""):
+            raise ValueError("NSE returned non-JSON response (likely blocked)")
+
         data = res.json()
 
         oi = data.get("oi")
@@ -92,7 +99,7 @@ def main():
                 data["OI"],
                 data["OI Change"]
             ])
-        sleep(1)
+        sleep(1.0)
 
     if rows:
         df = pd.DataFrame(rows, columns=HEADERS)
