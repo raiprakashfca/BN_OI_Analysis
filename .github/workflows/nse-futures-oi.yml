@@ -43,7 +43,7 @@ jobs:
 
       - name: 🔐 Decode and create service_account.json
         run: |
-          echo "${{ secrets.GOOGLE_SERVICE_KEY_B64 }}" | base64 -d > service_account.json
+          echo "${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}" | base64 -d > service_account.json
 
       - name: 🚀 Run fetch_nse_futures_oi.py
         run: python fetch_nse_futures_oi.py
