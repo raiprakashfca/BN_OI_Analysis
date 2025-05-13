@@ -5,7 +5,8 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # ---------------- CONFIG ----------------
-TOKEN_SHEET = "ZerodhaTokenStore"
+TOKEN_SHEET_KEY = "1mANuCob4dz3jvjigeO1km96vBzZHr-4ZflZEXxR8-qU"
+TOKEN_TAB_NAME = "Sheet1"
 OI_SHEET = "Futures_OI_Log"
 TOP_BANK_STOCKS = ['AXISBANK', 'ICICIBANK', 'SBIN', 'HDFCBANK', 'KOTAKBANK', 'BANKBARODA', 'PNB']
 HEADERS = ['Date', 'Time', 'Symbol', 'OI', 'Change']
@@ -18,7 +19,7 @@ def authorize_google_sheets():
     return gspread.authorize(creds)
 
 def load_zerodha_tokens(sheet_client):
-    sheet = sheet_client.open(TOKEN_SHEET).sheet1
+    sheet = sheet_client.open_by_key(TOKEN_SHEET_KEY).worksheet(TOKEN_TAB_NAME)
     api_key = sheet.cell(1, 1).value
     api_secret = sheet.cell(1, 2).value
     access_token = sheet.cell(1, 3).value
@@ -46,7 +47,7 @@ def get_futures_instruments(kite):
     instruments = kite.instruments()
     df = pd.DataFrame(instruments)
     df = df[df['segment'] == 'NFO-FUT']
-    df['expiry'] = pd.to_datetime(df['expiry'])  # Ensure correct dtype
+    df['expiry'] = pd.to_datetime(df['expiry'])
     return df
 
 # ---------------- OI FETCH LOGIC ----------------
@@ -66,7 +67,7 @@ def fetch_intraday_oi_snapshot(kite):
             try:
                 quote = kite.ltp(contract['instrument_token'])
                 oi = quote[str(contract['instrument_token'])]['depth']['sell'][0]['quantity']
-                data.append([str(today), now, symbol, oi, 0])  # Change placeholder = 0
+                data.append([str(today), now, symbol, oi, 0])  # Placeholder for change
                 print(f"✅ {symbol}: OI = {oi}")
             except Exception as e:
                 print(f"❌ Error fetching OI for {symbol}: {e}")
