@@ -7,7 +7,7 @@ from google.oauth2.service_account import Credentials
 # ---------------- CONFIG ----------------
 TOKEN_SHEET_KEY = "1mANuCob4dz3jvjigeO1km96vBzZHr-4ZflZEXxR8-qU"
 TOKEN_TAB_NAME = "Sheet1"
-OI_SHEET = "Futures_OI_Log"
+OI_SHEET = "OI_DailyLog"  # ✅ Updated to correct sheet name
 TOP_BANK_STOCKS = ['AXISBANK', 'ICICIBANK', 'SBIN', 'HDFCBANK', 'KOTAKBANK', 'BANKBARODA', 'PNB']
 HEADERS = ['Date', 'Time', 'Symbol', 'OI', 'Change']
 
@@ -33,7 +33,7 @@ def validate_and_write_headers(ws):
         ws.append_row(HEADERS)
 
 def write_to_google_sheet(sheet_client, df):
-    ws = sheet_client.open(OI_SHEET).sheet1
+    ws = sheet_client.open(OI_SHEET).worksheet("Sheet1")  # ✅ Writes to OI_DailyLog → Sheet1
     validate_and_write_headers(ws)
     ws.append_rows(df.values.tolist())
 
@@ -67,7 +67,7 @@ def fetch_intraday_oi_snapshot(kite):
             try:
                 quote = kite.ltp(contract['instrument_token'])
                 oi = quote[str(contract['instrument_token'])]['depth']['sell'][0]['quantity']
-                data.append([str(today), now, symbol, oi, 0])  # Placeholder for change
+                data.append([str(today), now, symbol, oi, 0])  # Change placeholder = 0
                 print(f"✅ {symbol}: OI = {oi}")
             except Exception as e:
                 print(f"❌ Error fetching OI for {symbol}: {e}")
