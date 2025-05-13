@@ -2,7 +2,7 @@ name: Scheduled NSE Futures OI Logging
 
 on:
   schedule:
-    - cron: '*/15 3-10 * * 1-5'  # Every 15 minutes from 9:15 to 15:30 IST (3–10 UTC)
+    - cron: '*/15 3-10 * * 1-5'  # Every 15 minutes from 9:15 to 15:30 IST
   workflow_dispatch:
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
 
       - name: 🔐 Decode service_account.json
         run: |
-          echo "${{ secrets.GOOGLE_SERVICE_KEY_B64 }}" | base64 -d > service_account.json
+          echo "${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}" | base64 -d > service_account.json
 
       - name: ▶️ Run NSE Futures OI Fetch Script
         run: |
