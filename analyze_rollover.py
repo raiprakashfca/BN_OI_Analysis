@@ -1,65 +1,78 @@
-from datetime import datetime
 import pandas as pd
+from datetime import datetime, timedelta
 import gspread
-import json
-import base64
-import os
 from google.oauth2.service_account import Credentials
 
-# --- CONFIG ---
-GSHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
-SHEET_NAME = "Rollover_Analysis"
-REQUIRED_COLUMNS = ["Symbol", "Near Expiry", "Far Expiry", "Near OI", "Far OI", "Rollover %", "Date"]
+# ------------- CONFIGURATION -------------
+TOKEN_SHEET = "ZerodhaTokenStore"
+OI_LOG_SHEET = "Futures_OI_Log"
+SUMMARY_SHEET = "Rollover_Summary"
+HEADERS = ['Symbol', 'Prev OI', 'Curr OI', 'Change', 'Change %']
 
-def load_gsheet_client():
-    print("🔐 Authenticating with Google Sheets...")
+# ------------- GOOGLE SHEETS UTILS -------------
+def authorize_google_sheets():
+    creds = Credentials.from_service_account_file("service_account.json", scopes=[
+        "https://www.googleapis.com/auth/spreadsheets"
+    ])
+    client = gspread.authorize(creds)
+    return client
 
-    creds_b64 = os.environ.get("SERVICE_ACCOUNT_JSON_B64")
-    if not creds_b64:
-        raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64")
+def validate_and_write_headers(ws):
+    existing = ws.row_values(1)
+    if existing != HEADERS:
+        print("🔄 Updating header row...")
+        ws.clear()
+        ws.append_row(HEADERS)
 
-    padding = len(creds_b64) % 4
-    if padding:
-        creds_b64 += '=' * (4 - padding)
+def write_summary_to_sheet(sheet_client, summary_df):
+    ws = sheet_client.open(SUMMARY_SHEET).sheet1
+    validate_and_write_headers(ws)
+    ws.append_rows(summary_df.values.tolist())
 
-    creds_dict = json.loads(base64.b64decode(creds_b64).decode("utf-8"))
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
+# ------------- CORE LOGIC -------------
+def load_oi_log(sheet_client):
+    ws = sheet_client.open(OI_LOG_SHEET).sheet1
+    data = ws.get_all_records()
+    df = pd.DataFrame(data)
+    df['Date'] = pd.to_datetime(df['Date'])
+    return df
 
-    return gspread.authorize(credentials)
+def analyze_rollover(df):
+    today = df['Date'].max()
+    prev_day = today - timedelta(days=1)
 
-def write_to_google_sheet(client, df):
-    print("🧾 Preparing to write to Google Sheet...")
+    # Get last two trading days (by date, not calendar logic)
+    df_today = df[df['Date'] == today]
+    df_prev = df[df['Date'] == prev_day]
 
-    sheet = client.open_by_key(GSHEET_ID).worksheet(SHEET_NAME)
-    existing = sheet.get_all_values()
-    if not existing or existing[0] != REQUIRED_COLUMNS:
-        print("📄 Writing headers to Google Sheet...")
-        sheet.update("A1", [REQUIRED_COLUMNS])
-    else:
-        print("✅ Headers already exist.")
+    if df_today.empty or df_prev.empty:
+        print("⚠️ Not enough data to compute rollover.")
+        return pd.DataFrame()
 
-    print("✍️ Appending data to sheet...")
-    sheet.append_rows(df.values.tolist(), value_input_option="USER_ENTERED")
-    print("✅ Data written successfully.")
+    merged = pd.merge(df_prev, df_today, on='Symbol', suffixes=('_prev', '_curr'))
+    merged['Change'] = merged['OI_curr'] - merged['OI_prev']
+    merged['Change %'] = ((merged['Change']) / merged['OI_prev']) * 100
 
-def simulate_rollover_data():
-    print("🔢 Simulating dummy rollover data...")
-    today = datetime.now().strftime("%Y-%m-%d")
-    return pd.DataFrame([
-        ["BANKNIFTY", "2025-05-30", "2025-06-27", 1000000, 250000, 25.0, today],
-        ["ICICIBANK", "2025-05-30", "2025-06-27", 800000, 200000, 25.0, today],
-        ["HDFCBANK", "2025-05-30", "2025-06-27", 750000, 300000, 28.6, today],
-    ], columns=REQUIRED_COLUMNS)
+    summary = merged[['Symbol', 'OI_prev', 'OI_curr', 'Change', 'Change %']].copy()
+    summary.columns = HEADERS
+    summary = summary.sort_values(by='Change %', ascending=False)
 
-# --- MAIN ---
+    return summary.round(2)
+
+# ------------- MAIN EXECUTION -------------
 if __name__ == "__main__":
-    print("🚀 Starting Rollover Analysis Summary...")
+    print("🔐 Connecting to Google Sheets...")
+    gclient = authorize_google_sheets()
 
-    try:
-        client = load_gsheet_client()
-        df = simulate_rollover_data()
-        write_to_google_sheet(client, df)
-    except Exception as e:
-        print(f"❌ Error occurred: {e}")
-        raise e
+    print("📥 Reading OI log data...")
+    df_oi = load_oi_log(gclient)
+
+    print("📊 Analyzing rollover...")
+    df_summary = analyze_rollover(df_oi)
+
+    if not df_summary.empty:
+        print("📤 Writing summary to Google Sheet...")
+        write_summary_to_sheet(gclient, df_summary)
+        print("✅ Rollover analysis complete.")
+    else:
+        print("⚠️ No summary generated.")
