@@ -1,43 +1,43 @@
 import pandas as pd
-import datetime
+from datetime import datetime, date
 from kiteconnect import KiteConnect
 import gspread
 from google.oauth2.service_account import Credentials
 
-# ------------- CONFIGURATION -------------
-GSHEET_NAME = "Futures_OI_Log"
-TOKEN_SHEET = "ZerodhaTokenStore"
+# ---------------- CONFIG ----------------
+TOKEN_SHEET_KEY = "1mANuCob4dz3jvjigeO1km96vBzZHr-4ZflZEXxR8-qU"
+TOKEN_TAB_NAME = "Sheet1"
+OI_SHEET = "Futures_OI_Log"
 TOP_BANK_STOCKS = ['AXISBANK', 'ICICIBANK', 'SBIN', 'HDFCBANK', 'KOTAKBANK', 'BANKBARODA', 'PNB']
-REQUIRED_HEADERS = ['Date', 'Time', 'Symbol', 'OI', 'Change']
+HEADERS = ['Date', 'Time', 'Symbol', 'OI', 'Change']
 
-# ------------- GOOGLE SHEETS UTILS -------------
+# ---------------- GOOGLE SHEETS ----------------
 def authorize_google_sheets():
     creds = Credentials.from_service_account_file("service_account.json", scopes=[
         "https://www.googleapis.com/auth/spreadsheets"
     ])
-    client = gspread.authorize(creds)
-    return client
+    return gspread.authorize(creds)
 
 def load_zerodha_tokens(sheet_client):
-    sheet = sheet_client.open(TOKEN_SHEET).sheet1
+    sheet = sheet_client.open_by_key(TOKEN_SHEET_KEY).worksheet(TOKEN_TAB_NAME)
     api_key = sheet.cell(1, 1).value
     api_secret = sheet.cell(1, 2).value
     access_token = sheet.cell(1, 3).value
+    print(f"✅ Token valid for user: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     return api_key, api_secret, access_token
 
 def validate_and_write_headers(ws):
-    headers = ws.row_values(1)
-    if headers != REQUIRED_HEADERS:
+    if ws.row_values(1) != HEADERS:
         print("🔄 Updating header row...")
         ws.clear()
-        ws.append_row(REQUIRED_HEADERS)
+        ws.append_row(HEADERS)
 
 def write_to_google_sheet(sheet_client, df):
-    ws = sheet_client.open(GSHEET_NAME).sheet1
+    ws = sheet_client.open(OI_SHEET).sheet1
     validate_and_write_headers(ws)
     ws.append_rows(df.values.tolist())
 
-# ------------- ZERODHA UTILS -------------
+# ---------------- ZERODHA SETUP ----------------
 def authenticate_kite(api_key, access_token):
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)
@@ -47,53 +47,49 @@ def get_futures_instruments(kite):
     instruments = kite.instruments()
     df = pd.DataFrame(instruments)
     df = df[df['segment'] == 'NFO-FUT']
+    df['expiry'] = pd.to_datetime(df['expiry'])
     return df
 
-# ------------- MAIN FETCH LOGIC -------------
-def fetch_futures_oi(kite, df_instruments):
-    today = datetime.date.today()
-    now = datetime.datetime.now().strftime("%H:%M")
+# ---------------- OI FETCH LOGIC ----------------
+def fetch_intraday_oi_snapshot(kite):
+    today = date.today()
+    now = datetime.now().strftime("%H:%M")
     data = []
 
+    print("📡 Fetching OI Snapshot...")
+    df_fut = get_futures_instruments(kite)
+    df_fut = df_fut[df_fut['expiry'] >= pd.Timestamp(today)]
+
     for symbol in TOP_BANK_STOCKS:
-        rows = df_instruments[
-            (df_instruments['name'] == symbol) &
-            (df_instruments['expiry'] > pd.Timestamp(today))
-        ]
-        if not rows.empty:
-            row = rows.sort_values(by='expiry').iloc[0]
+        contracts = df_fut[df_fut['name'] == symbol]
+        if not contracts.empty:
+            contract = contracts.sort_values(by='expiry').iloc[0]
             try:
-                quote = kite.ltp(row['instrument_token'])
-                oi = quote[str(row['instrument_token'])]['depth']['sell'][0]['quantity']
-                data.append([str(today), now, symbol, oi, 0])  # Placeholder 0 for change
+                quote = kite.ltp(contract['instrument_token'])
+                oi = quote[str(contract['instrument_token'])]['depth']['sell'][0]['quantity']
+                data.append([str(today), now, symbol, oi, 0])  # Placeholder for change
                 print(f"✅ {symbol}: OI = {oi}")
             except Exception as e:
                 print(f"❌ Error fetching OI for {symbol}: {e}")
         else:
-            print(f"⚠️ No valid futures contract for {symbol}")
+            print(f"⚠️ No valid future found for {symbol}")
+    return pd.DataFrame(data, columns=HEADERS)
 
-    return pd.DataFrame(data, columns=REQUIRED_HEADERS)
-
-# ------------- RUN SCRIPT -------------
+# ---------------- MAIN ----------------
 if __name__ == "__main__":
-    print("🔐 Authenticating Google Sheets...")
-    client = authorize_google_sheets()
+    print("🔐 Authenticating with Google Sheets...")
+    gclient = authorize_google_sheets()
 
-    print("📦 Loading Zerodha credentials...")
-    api_key, api_secret, access_token = load_zerodha_tokens(client)
+    print("📦 Loading Zerodha tokens from Google Sheets...")
+    api_key, api_secret, access_token = load_zerodha_tokens(gclient)
 
     print("🔗 Connecting to Kite...")
     kite = authenticate_kite(api_key, access_token)
 
-    print("🧠 Downloading instrument list...")
-    df_instruments = get_futures_instruments(kite)
-
-    print("📊 Fetching futures OI data...")
-    df_oi = fetch_futures_oi(kite, df_instruments)
-
-    if not df_oi.empty:
-        print("📤 Writing to Google Sheet...")
-        write_to_google_sheet(client, df_oi)
+    df = fetch_intraday_oi_snapshot(kite)
+    if not df.empty:
+        print("📤 Writing intraday OI snapshot to Google Sheets...")
+        write_to_google_sheet(gclient, df)
         print("✅ Done.")
     else:
-        print("⚠️ No data fetched.")
+        print("⚠️ No OI data captured.")
