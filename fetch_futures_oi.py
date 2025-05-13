@@ -1,90 +1,99 @@
 import pandas as pd
-import datetime as dt
+import datetime
 from kiteconnect import KiteConnect
-from google.oauth2.service_account import Credentials
 import gspread
-import json
-import base64
-import os
+from google.oauth2.service_account import Credentials
 
-# --- CONFIG ---
-TOKEN_SHEET_NAME = "ZerodhaTokenStore"
-SHEET_ID = "1ZYjZ0LXbaD69X3U-VcN0Qh3KwtHO9gMXPBdzUuzkCeM"
-SHEET_NAME = "EOD_Summary"
-STOCKS = ["BANKNIFTY", "ICICIBANK", "HDFCBANK", "SBIN", "AXISBANK", "KOTAKBANK", "PNB", "BANKBARODA"]
+# ------------- CONFIGURATION -------------
+GSHEET_NAME = "Futures_OI_Log"
+TOKEN_SHEET = "ZerodhaTokenStore"
+TOP_BANK_STOCKS = ['AXISBANK', 'ICICIBANK', 'SBIN', 'HDFCBANK', 'KOTAKBANK', 'BANKBARODA', 'PNB']
+REQUIRED_HEADERS = ['Date', 'Time', 'Symbol', 'OI', 'Change']
 
-def load_kite_client():
-    print("🔐 Authenticating with Google Sheets...")
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds_b64 = os.getenv("SERVICE_ACCOUNT_JSON_B64")
-    if not creds_b64:
-        raise ValueError("Missing SERVICE_ACCOUNT_JSON_B64")
-    padding = len(creds_b64) % 4
-    if padding:
-        creds_b64 += '=' * (4 - padding)
-    creds_dict = json.loads(base64.b64decode(creds_b64).decode("utf-8"))
-    credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
-    client = gspread.authorize(credentials)
+# ------------- GOOGLE SHEETS UTILS -------------
+def authorize_google_sheets():
+    creds = Credentials.from_service_account_file("service_account.json", scopes=[
+        "https://www.googleapis.com/auth/spreadsheets"
+    ])
+    client = gspread.authorize(creds)
+    return client
 
-    print("📦 Loading Zerodha tokens from Google Sheets...")
-    sheet = client.open(TOKEN_SHEET_NAME).sheet1
-    api_key = sheet.acell("A1").value
-    access_token = sheet.acell("C1").value
+def load_zerodha_tokens(sheet_client):
+    sheet = sheet_client.open(TOKEN_SHEET).sheet1
+    api_key = sheet.cell(1, 1).value
+    api_secret = sheet.cell(1, 2).value
+    access_token = sheet.cell(1, 3).value
+    return api_key, api_secret, access_token
 
+def validate_and_write_headers(ws):
+    headers = ws.row_values(1)
+    if headers != REQUIRED_HEADERS:
+        print("🔄 Updating header row...")
+        ws.clear()
+        ws.append_row(REQUIRED_HEADERS)
+
+def write_to_google_sheet(sheet_client, df):
+    ws = sheet_client.open(GSHEET_NAME).sheet1
+    validate_and_write_headers(ws)
+    ws.append_rows(df.values.tolist())
+
+# ------------- ZERODHA UTILS -------------
+def authenticate_kite(api_key, access_token):
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)
-    return kite, client
+    return kite
 
-def fetch_eod_data(kite):
-    print("📈 Fetching actual EOD data from Zerodha...")
+def get_futures_instruments(kite):
     instruments = kite.instruments()
-    df_inst = pd.DataFrame(instruments)
-    df_fut = df_inst[(df_inst["segment"] == "NFO-FUT") & (df_inst["name"].isin(STOCKS))]
-    
-    today = dt.date.today()
-    df_latest = df_fut[df_fut["expiry"] > today].sort_values("expiry").drop_duplicates("name")
+    df = pd.DataFrame(instruments)
+    df = df[df['segment'] == 'NFO-FUT']
+    return df
 
-    all_data = []
-    for _, row in df_latest.iterrows():
-        try:
-            token = row["instrument_token"]
-            ohlc = kite.ohlc([token])[str(token)]["ohlc"]
-            data = {
-                "Date": today.strftime("%Y-%m-%d"),
-                "Symbol": row["name"],
-                "Start OI": None,
-                "End OI": None,
-                "Net OI Change (%)": None,
-                "Start Price": ohlc["open"],
-                "End Price": ohlc["close"],
-                "Price Change (%)": round(((ohlc["close"] - ohlc["open"]) / ohlc["open"]) * 100, 2),
-                "Classification": "",
-                "Anomaly": ""
-            }
-            all_data.append(data)
-        except Exception as e:
-            print(f"⚠️ Error fetching EOD for {row['name']}: {e}")
+# ------------- MAIN FETCH LOGIC -------------
+def fetch_futures_oi(kite, df_instruments):
+    today = datetime.date.today()
+    now = datetime.datetime.now().strftime("%H:%M")
+    data = []
 
-    return pd.DataFrame(all_data)
+    for symbol in TOP_BANK_STOCKS:
+        rows = df_instruments[
+            (df_instruments['name'] == symbol) &
+            (df_instruments['expiry'] > pd.Timestamp(today))
+        ]
+        if not rows.empty:
+            row = rows.sort_values(by='expiry').iloc[0]
+            try:
+                quote = kite.ltp(row['instrument_token'])
+                oi = quote[str(row['instrument_token'])]['depth']['sell'][0]['quantity']
+                data.append([str(today), now, symbol, oi, 0])  # Placeholder 0 for change
+                print(f"✅ {symbol}: OI = {oi}")
+            except Exception as e:
+                print(f"❌ Error fetching OI for {symbol}: {e}")
+        else:
+            print(f"⚠️ No valid futures contract for {symbol}")
 
-def write_to_google_sheet(client, df):
-    print("🧾 Preparing to write EOD Summary...")
-    sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
-    existing = sheet.get_all_values()
-    headers = ["Date", "Symbol", "Start OI", "End OI", "Net OI Change (%)", "Start Price", "End Price", "Price Change (%)", "Classification", "Anomaly"]
-    if not existing:
-        sheet.append_row(headers)
-        print("✅ Header row written to sheet.")
-    elif existing[0] != headers:
-        raise ValueError("Header mismatch")
+    return pd.DataFrame(data, columns=REQUIRED_HEADERS)
 
-    records = df.values.tolist()
-    for row in records:
-        sheet.append_row(row)
-    print(f"📤 Written {len(records)} rows to Google Sheet.")
-
+# ------------- RUN SCRIPT -------------
 if __name__ == "__main__":
-    kite, client = load_kite_client()
-    df = fetch_eod_data(kite)
-    write_to_google_sheet(client, df)
-    print("🎯 Script execution complete.")
+    print("🔐 Authenticating Google Sheets...")
+    client = authorize_google_sheets()
+
+    print("📦 Loading Zerodha credentials...")
+    api_key, api_secret, access_token = load_zerodha_tokens(client)
+
+    print("🔗 Connecting to Kite...")
+    kite = authenticate_kite(api_key, access_token)
+
+    print("🧠 Downloading instrument list...")
+    df_instruments = get_futures_instruments(kite)
+
+    print("📊 Fetching futures OI data...")
+    df_oi = fetch_futures_oi(kite, df_instruments)
+
+    if not df_oi.empty:
+        print("📤 Writing to Google Sheet...")
+        write_to_google_sheet(client, df_oi)
+        print("✅ Done.")
+    else:
+        print("⚠️ No data fetched.")
