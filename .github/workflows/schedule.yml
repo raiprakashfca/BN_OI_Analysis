@@ -1,15 +1,12 @@
-name: Scheduled OI Fetch (Intraday)
+name: Scheduled NSE Futures OI Logging
 
 on:
   schedule:
     - cron: '*/15 3-10 * * 1-5'  # Every 15 minutes from 9:15 to 15:30 IST (3–10 UTC)
-  workflow_dispatch:  # Allow manual trigger
-
-env:
-  SERVICE_ACCOUNT_JSON_B64: ${{ secrets.SERVICE_ACCOUNT_JSON_B64 }}
+  workflow_dispatch:
 
 jobs:
-  fetch-intraday-oi:
+  fetch-nse-oi:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,19 +18,15 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 📦 Install Python dependencies
+      - name: 📦 Install dependencies
         run: |
-          pip install -r requirements.txt
+          pip install pandas requests gspread google-auth
 
-      - name: 🔐 Decode service account JSON
+      - name: 🔐 Decode service_account.json
         run: |
-          if [[ -z "$SERVICE_ACCOUNT_JSON_B64" ]]; then
-            echo "❌ SERVICE_ACCOUNT_JSON_B64 secret not found."
-            exit 1
-          fi
-          echo "$SERVICE_ACCOUNT_JSON_B64" | base64 --decode > service_account.json
+          echo "${{ secrets.GOOGLE_SERVICE_KEY_B64 }}" | base64 -d > service_account.json
 
-      - name: ▶️ Run Intraday OI Fetch Script
+      - name: ▶️ Run NSE Futures OI Fetch Script
         run: |
-          echo "🔁 Running fetch_oi_futures.py for intraday logging..."
-          python fetch_oi_futures.py
+          echo "🔁 Running fetch_nse_futures_oi.py for intraday logging..."
+          python fetch_nse_futures_oi.py
